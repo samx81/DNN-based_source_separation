@@ -1,4 +1,4 @@
-import os
+import os,sys
 import shutil
 import subprocess
 import time
@@ -9,6 +9,7 @@ from mir_eval.separation import bss_eval_sources
 import torch
 import torchaudio
 import torch.nn as nn
+from tqdm import tqdm
 
 from utils.utils import draw_loss_curve
 from criterion.pit import pit
@@ -273,7 +274,7 @@ class TesterBase:
         os.chdir(tmp_dir)
         
         with torch.no_grad():
-            for idx, (mixture, sources, segment_IDs) in enumerate(self.loader):
+            for idx, (mixture, sources, segment_IDs) in tqdm(enumerate(self.loader), total=len(self.loader),file=sys.stdout):
                 if self.use_cuda:
                     mixture = mixture.cuda()
                     sources = sources.cuda()
@@ -365,7 +366,7 @@ class TesterBase:
                     subprocess.call("rm {}".format(estimated_path), shell=True)
                 
                 pesq /= self.n_sources
-                print("{}, {:.3f}, {:.3f}, {:.3f}, {:.3f}, {:.3f}, {:.3f}".format(mixture_ID, loss.item(), loss_improvement, sdr_improvement, sir_improvement, sar, pesq), flush=True)
+                tqdm.write("{}, {:.3f}, {:.3f}, {:.3f}, {:.3f}, {:.3f}, {:.3f}".format(mixture_ID, loss.item(), loss_improvement, sdr_improvement, sir_improvement, sar, pesq))
                 
                 test_loss += loss.item()
                 test_loss_improvement += loss_improvement

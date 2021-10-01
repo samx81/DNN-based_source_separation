@@ -205,7 +205,7 @@ class TrainerBase:
             train_loss += loss.item()
             t.set_postfix_str(f'loss: {loss.item():.5f}')
             
-            if (idx + 1)%500 == 0:
+            if (idx + 1) % 500 == 0:
                 t.write("[Epoch {}/{}] iter {}/{} loss: {:.5f}".format(epoch+1, self.epochs, idx+1, n_train_batch, loss.item()))
         
         train_loss /= n_train_batch
@@ -371,39 +371,34 @@ class TesterBase:
                 # Generate random number temporary wav file.
                 random_ID = str(uuid.uuid4())
 
-                if idx < 10 and self.out_dir is not None:
-                    mixture_path = os.path.join(self.out_dir, "{}.wav".format(mixture_ID))
-                    signal = mixture.unsqueeze(dim=0) if mixture.dim() == 1 else mixture
-                    torchaudio.save(mixture_path, signal, sample_rate=self.sr, bits_per_sample=BITS_PER_SAMPLE_WSJ0)
+                # if self.out_dir is not None:
+                #     mixture_path = os.path.join(self.out_dir, "{}.wav".format(mixture_ID))
+                #     signal = mixture.unsqueeze(dim=0) if mixture.dim() == 1 else mixture
+                #     torchaudio.save(mixture_path, signal, sample_rate=self.sr, bits_per_sample=BITS_PER_SAMPLE_WSJ0)
 
                 source, estimated_source = sources, estimated_sources
                 
                 # Target
                 norm = torch.abs(source).max()
                 source /= norm
-                if idx < 10 and  self.out_dir is not None:
+                if self.out_dir is not None:
                     source_path = os.path.join(self.out_dir, "{}-target.wav".format(mixture_ID))
-                    signal = source.unsqueeze(dim=0) if source.dim() == 1 else source
-                    torchaudio.save(source_path, signal, sample_rate=self.sr, bits_per_sample=BITS_PER_SAMPLE_WSJ0)
-                source_path = "tmp-target_{}.wav".format(random_ID)
+                else:
+                    source_path = "tmp-target_{}.wav".format(random_ID)
                 signal = source.unsqueeze(dim=0) if source.dim() == 1 else source
                 torchaudio.save(source_path, signal, sample_rate=self.sr, bits_per_sample=BITS_PER_SAMPLE_WSJ0)
                 
                 # Estimated source
                 norm = torch.abs(estimated_source).max()
                 estimated_source /= norm
-                if idx < 10 and  self.out_dir is not None:
+                if self.out_dir is not None:
                     estimated_path = os.path.join(self.out_dir, "{}-estimated.wav".format(mixture_ID))
-                    signal = estimated_source.unsqueeze(dim=0) if estimated_source.dim() == 1 else estimated_source
-                    torchaudio.save(estimated_path, signal, sample_rate=self.sr, bits_per_sample=BITS_PER_SAMPLE_WSJ0)
-                estimated_path = "tmp-estimated_{}.wav".format(random_ID)
+                else:
+                    estimated_path = "tmp-estimated_{}.wav".format(random_ID)
                 signal = estimated_source.unsqueeze(dim=0) if estimated_source.dim() == 1 else estimated_source
                 torchaudio.save(estimated_path, signal, sample_rate=self.sr, bits_per_sample=BITS_PER_SAMPLE_WSJ0)
                 
                 pesq = 0
-                
-                source_path = "tmp-target_{}.wav".format(random_ID)
-                estimated_path = "tmp-estimated_{}.wav".format(random_ID)
                 
                 command = "./PESQ +{} {} {}".format(self.sr, source_path, estimated_path)
                 command += " | grep Prediction | awk '{print $5}'"

@@ -5,7 +5,7 @@ continue_from=""
 tag=""
 
 n_sources=2
-sr_k=8 # sr_k=8 means sampling rate is 8kHz. Choose from 8kHz or 16kHz.
+sr_k=16 # sr_k=8 means sampling rate is 8kHz. Choose from 8kHz or 16kHz.
 sr=${sr_k}000
 duration=4
 valid_duration=10
@@ -18,18 +18,23 @@ train_list_path="../../../dataset/wsj0-mix/${n_sources}speakers/mix_${n_sources}
 valid_list_path="../../../dataset/wsj0-mix/${n_sources}speakers/mix_${n_sources}_spk_${max_or_min}_cv_mix"
 
 # Encoder & decoder
-enc_bases='trainable' # choose from 'trainable','Fourier', or 'trainableFourier'
-dec_bases='trainable' # choose from 'trainable','Fourier', 'trainableFourier', or 'pinv'
+enc_bases='Complex' # choose from 'trainable','Fourier', or 'trainableFourier', + 'Complex' 
+dec_bases='Complex' # choose from 'trainable','Fourier', 'trainableFourier', or 'pinv', + 'Complex' 
 enc_nonlinear='relu' # enc_nonlinear is activated if enc_bases='trainable' and dec_bases!='pinv'
-window_fn='' # window_fn is activated if enc_bases='Fourier' or dec_bases='Fourier'
+window_fn='hanning' # window_fn is activated if enc_bases='Fourier' or dec_bases='Fourier', 
+             # can be choose from 'hann' or 'hamming', but when complex, window varys from 'default' or 'hanning'  
 D=128
-M=8 # M corresponds to the window length (samples) in this script.
+M=400 # M corresponds to the window length (samples) in this script.
+kernel_shift=100
+# "n_filters": 512,      # 256, 512, 256
+# "kernel_size": 400,    # 16, 400, 16
+# "kernel_shift": 100,   # 8, 100, 8
 
 # Separator
-H=128
-K=150
-P=75
-Q=16
+H=256
+K=100
+P=50
+Q=32
 N=6
 J=8
 sep_norm=1
@@ -47,7 +52,7 @@ lr=1e-3
 weight_decay=1e-6
 max_norm=5 # 0 is handled as no clipping
 
-batch_size=2
+batch_size=4
 epochs=100
 
 use_cuda=1
@@ -107,6 +112,7 @@ train.py \
 -Q ${Q} \
 -N ${N} \
 -J ${J} \
+--stride ${kernel_shift} \
 --causal ${causal} \
 --sep_norm ${sep_norm} \
 --sep_dropout ${sep_dropout} \

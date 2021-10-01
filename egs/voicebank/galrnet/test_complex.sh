@@ -14,12 +14,13 @@ wav_root="data/voicebank/${split_type}"
 test_list_path="../../../dataset/wsj0-mix/${n_sources}speakers/mix_${n_sources}_spk_${max_or_min}_tt_mix"
 
 # Encoder & decoder
-enc_bases='trainable' # choose from 'trainable','Fourier', or 'trainableFourier'
-dec_bases='trainable' # choose from 'trainable','Fourier', 'trainableFourier', or 'pinv'
+enc_bases='Complex' # choose from 'trainable','Fourier', or 'trainableFourier'
+dec_bases='Complex' # choose from 'trainable','Fourier', 'trainableFourier', or 'pinv'
 enc_nonlinear='relu' # enc_nonlinear is activated if enc_bases='trainable' and dec_bases!='pinv'
-window_fn='' # window_fn is activated if enc_bases='Fourier' or dec_bases='Fourier'
-D=64
-M=16 # M corresponds to the window length (samples) in this script.
+window_fn='hanning' # window_fn is activated if enc_bases='Fourier' or dec_bases='Fourier'
+D=512
+M=200 # M corresponds to the window length (samples) in this script.
+kernel_shift=50
 
 # Separator
 H=128

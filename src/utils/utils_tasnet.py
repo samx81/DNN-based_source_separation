@@ -1,6 +1,7 @@
 import torch.nn as nn
 
 from models.tasnet import FourierEncoder, FourierDecoder, Encoder, Decoder, PinvEncoder
+from models.complex import Complex_STFT, Complex_ISTFT
 from norm import GlobalLayerNorm, CumulativeLayerNorm1d
 
 EPS=1e-12
@@ -19,6 +20,10 @@ def choose_bases(hidden_channels, kernel_size, stride=None, enc_bases='trainable
     elif enc_bases == 'Fourier':
         assert in_channels == 1 # TODO
         encoder = FourierEncoder(in_channels, hidden_channels, kernel_size, stride=stride, window_fn=kwargs['window_fn'], trainable=False)
+    elif enc_bases == 'Complex':
+        # self.encoder = Stft(n_filters, kernel_size, kernel_shift, win_type="hanning") #kernel_size == window_size
+        # self.decoder = iStft(n_filters, kernel_size, kernel_shift, win_type="hanning")
+        encoder = Complex_STFT(hidden_channels, 512, kernel_size, stride=stride, win_type=kwargs['window_fn'])
     elif enc_bases == 'trainableFourier':
         assert in_channels == 1 # TODO
         encoder = FourierEncoder(in_channels, hidden_channels, kernel_size, stride=stride, window_fn=kwargs['window_fn'], trainable=True)
@@ -27,6 +32,8 @@ def choose_bases(hidden_channels, kernel_size, stride=None, enc_bases='trainable
         
     if dec_bases == 'trainable':
         decoder = Decoder(hidden_channels, in_channels, kernel_size, stride=stride)
+    elif dec_bases == 'Complex':
+        decoder = Complex_ISTFT(hidden_channels, 512, kernel_size, stride=stride, win_type=kwargs['window_fn'])
     elif dec_bases == 'Fourier':
         assert in_channels == 1 # TODO
         decoder = FourierDecoder(hidden_channels, in_channels, kernel_size, stride=stride, window_fn=kwargs['window_fn'], trainable=False)

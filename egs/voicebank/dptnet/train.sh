@@ -22,32 +22,35 @@ enc_bases='trainable' # choose from 'trainable','Fourier', or 'trainableFourier'
 dec_bases='trainable' # choose from 'trainable','Fourier', 'trainableFourier', or 'pinv'
 enc_nonlinear='relu' # enc_nonlinear is activated if enc_bases='trainable' and dec_bases!='pinv'
 window_fn='' # window_fn is activated if enc_bases='Fourier' or dec_bases='Fourier'
-D=128
-M=8 # M corresponds to the window length (samples) in this script.
+N=64
+L=16 # L corresponds to the window length (samples) in this script.
 
 # Separator
+F=64
 H=128
-K=150
-P=75
-Q=16
-N=6
-J=8
+K=100
+P=50
+B=6
+d_ff=128
+h=8
+causal=0
 sep_norm=1
 sep_nonlinear='relu'
-sep_dropout=1e-1
+sep_dropout=0
 mask_nonlinear='relu'
-causal=0
 
 # Criterion
 criterion='sisdr'
 
 # Optimizer
 optimizer='adam'
-lr=1e-3
-weight_decay=1e-6
+k1=2e-1
+k2=4e-4
+warmup_steps=4000
+weight_decay=0
 max_norm=5 # 0 is handled as no clipping
 
-batch_size=2
+batch_size=1
 epochs=100
 
 use_cuda=1
@@ -69,7 +72,7 @@ if [ ${enc_bases} = 'Fourier' -o ${dec_bases} = 'Fourier' ]; then
 fi
 
 if [ -z "${tag}" ]; then
-    save_dir="${exp_dir}/${n_sources}mix/sr${sr_k}k_${max_or_min}/${duration}sec/${enc_bases}-${dec_bases}/${criterion}/D${D}_M${M}_H${H}_K${K}_P${P}_Q${Q}_H${H}_N${N}_J${J}/${prefix}causal${causal}_norm${sep_norm}_drop${sep_dropout}_mask-${mask_nonlinear}/b${batch_size}_e${epochs}_${optimizer}-lr${lr}-decay${weight_decay}_clip${max_norm}/seed${seed}"
+    save_dir="${exp_dir}/${n_sources}mix/sr${sr_k}k_${max_or_min}/${duration}sec/${enc_bases}-${dec_bases}/${criterion}/N${N}_L${L}_F${F}_H${H}_K${K}_P${P}_B${B}_d-ff${d_ff}_h${h}/${prefix}causal${causal}_norm${sep_norm}_${sep_nonlinear}_drop${sep_dropout}_mask-${mask_nonlinear}/b${batch_size}_e${epochs}_${optimizer}-k1${k1}-k2${k2}-decay${weight_decay}-warmup${warmup_steps}_clip${max_norm}/seed${seed}"
 else
     save_dir="${exp_dir}/${tag}"
 fi
@@ -99,23 +102,26 @@ train.py \
 --dec_bases ${dec_bases} \
 --enc_nonlinear "${enc_nonlinear}" \
 --window_fn "${window_fn}" \
--D ${D} \
--M ${M} \
--H ${H} \
+-N ${N} \
+-L ${L} \
+-F ${F} \
 -K ${K} \
 -P ${P} \
--Q ${Q} \
--N ${N} \
--J ${J} \
+-B ${B} \
+-d_ff ${d_ff} \
+--sep_num_heads ${h} \
 --causal ${causal} \
 --sep_norm ${sep_norm} \
+--sep_nonlinear ${sep_nonlinear} \
 --sep_dropout ${sep_dropout} \
 --mask_nonlinear ${mask_nonlinear} \
 --n_sources ${n_sources} \
 --criterion ${criterion} \
 --optimizer ${optimizer} \
---lr ${lr} \
+--k1 ${k1} \
+--k2 ${k2} \
 --weight_decay ${weight_decay} \
+--warmup_steps ${warmup_steps} \
 --max_norm ${max_norm} \
 --batch_size ${batch_size} \
 --epochs ${epochs} \

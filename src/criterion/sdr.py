@@ -96,7 +96,6 @@ class NegSISDR(nn.Module):
         n_dims = input.dim()
         
         assert n_dims in [2, 3, 4], "Only 2D or 3D or 4D tensor is acceptable, but given {}D tensor.".format(n_dims)
-        
         loss = - sisdr(input, target, eps=self.eps)
 
         if self.reduction:
@@ -110,10 +109,8 @@ class NegSISDR(nn.Module):
                     loss = loss.mean(dim=(1, 2))
                 elif self.reduction == 'sum':
                     loss = loss.sum(dim=(1, 2))
-        
         if batch_mean:
             loss = loss.mean(dim=0)
-        
         return loss
     
     @property

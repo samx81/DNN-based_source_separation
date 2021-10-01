@@ -39,12 +39,13 @@ class GALRNet(nn.Module):
             self.enc_nonlinear = kwargs['enc_nonlinear']
         else:
             self.enc_nonlinear = None
-        
-        if enc_bases in ['Fourier', 'trainableFourier'] or dec_bases in ['Fourier', 'trainableFourier']:
-            self.window_fn = kwargs['window_fn']
+
+        if enc_bases in ['Fourier', 'trainableFourier', 'Complex'] or dec_bases in ['Fourier', 'trainableFourier', 'Complex']:
+            if kwargs['window_fn'] == '': kwargs['window_fn'] = 'hanning'
+            self.window_fn = kwargs['window_fn']    
         else:
             self.window_fn = None
-        
+        print(self.window_fn)
         # Separator configuration
         self.sep_hidden_channels = sep_hidden_channels
         self.sep_chunk_size, self.sep_hop_size, self.sep_down_chunk_size = sep_chunk_size, sep_hop_size, sep_down_chunk_size
@@ -105,10 +106,10 @@ class GALRNet(nn.Module):
         padding_right = padding - padding_left
 
         input = F.pad(input, (padding_left, padding_right))
-        w = self.encoder(input)
-        mask = self.separator(w)
-        w = w.unsqueeze(dim=1)
-        w_hat = w * mask
+        w = self.encoder(input) # [bs, feature, timestep]
+        mask = self.separator(w) # [bs, sources, feature, timestep]
+        w = w.unsqueeze(dim=1) # [bs, feature, timestep] -> [bs, sources, feature, timestep]
+        w_hat = w * mask # [bs, sources, feature, timestep]
         latent = w_hat
         w_hat = w_hat.view(batch_size*n_sources, n_bases, -1)
         x_hat = self.decoder(w_hat)
@@ -142,6 +143,44 @@ class GALRNet(nn.Module):
         }
     
         return package
+
+    @classmethod
+    def build_model(cls, model_path):
+        package = torch.load(model_path, map_location=lambda storage, loc: storage)
+
+        n_bases = package['n_bases']
+        kernel_size, stride = package['kernel_size'], package['stride']
+        enc_bases, dec_bases = package['enc_bases'], package['dec_bases']
+        enc_nonlinear = package['enc_nonlinear']
+        window_fn = package['window_fn']
+        
+        sep_hidden_channels = package['sep_hidden_channels']
+        sep_chunk_size, sep_hop_size = package['sep_chunk_size'], package['sep_hop_size']
+        sep_down_chunk_size, sep_num_blocks = package['sep_down_chunk_size'], package['sep_num_blocks']
+        
+        sep_norm = package['sep_norm']
+        sep_dropout, sep_num_heads = package['sep_dropout'], package['sep_num_heads']
+        mask_nonlinear = package['mask_nonlinear']
+
+        causal = package['causal']
+        n_sources = package['n_sources']
+        low_dimension = package['low_dimension']
+        
+        eps = package['eps']
+        
+        model = cls(
+            n_bases, kernel_size, stride=stride, enc_bases=enc_bases, dec_bases=dec_bases, enc_nonlinear=enc_nonlinear, window_fn=window_fn,
+            sep_hidden_channels=sep_hidden_channels, 
+            sep_chunk_size=sep_chunk_size, sep_hop_size=sep_hop_size, sep_down_chunk_size=sep_down_chunk_size, sep_num_blocks=sep_num_blocks,
+            sep_num_heads=sep_num_heads, sep_norm=sep_norm, sep_dropout=sep_dropout,
+            mask_nonlinear=mask_nonlinear,
+            causal=causal,
+            n_sources=n_sources,
+            low_dimension=low_dimension,
+            eps=eps
+        )
+        
+        return model
     
     def _get_num_parameters(self):
         num_parameters = 0
