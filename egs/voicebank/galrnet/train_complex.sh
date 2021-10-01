@@ -63,6 +63,7 @@ gpu_id="0"
 . ./path.sh
 . parse_options.sh || exit 1
 
+tag="complex${tag}"
 prefix=""
 
 if [ ${enc_bases} = 'trainable' -a -n "${enc_nonlinear}" -a ${dec_bases} != 'pinv' ]; then
