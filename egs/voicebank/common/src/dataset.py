@@ -3,6 +3,7 @@ import os
 import torch
 import torchaudio
 import torch.nn as nn
+import torch.nn.functional as F
 from tqdm import tqdm
 
 from algorithm.frequency_mask import ideal_binary_mask, ideal_ratio_mask, wiener_filter_mask
@@ -17,7 +18,7 @@ class WSJ0Dataset(torch.utils.data.Dataset):
         self.list_path = os.path.abspath(list_path)
 
 class WaveDataset(WSJ0Dataset):
-    def __init__(self, wav_root, list_path, samples=32000, overlap=None, n_sources=2, chunk=True):
+    def __init__(self, wav_root, list_path, samples=32000, least_sample=None, overlap=None, n_sources=2, chunk=True):
         super().__init__(wav_root, list_path)
 
         wav_root = os.path.abspath(wav_root)
@@ -25,7 +26,10 @@ class WaveDataset(WSJ0Dataset):
         noisy_list_path = os.path.join(wav_root, 'noisy.scp')
         length_list_path = os.path.join(wav_root, 'length.list')
         
-        self.overlap = overlap if overlap else samples//2
+        self.chunk = chunk
+        self.samples = samples if samples else 16000 * 10
+        self.overlap = overlap if overlap else self.samples // 2
+        self.least_sample = least_sample if least_sample else self.samples // 4
         
         self.json_data = []
 
@@ -61,6 +65,8 @@ class WaveDataset(WSJ0Dataset):
                 
                     end_idx = start_idx + samples
                     if end_idx > T_total:
+                        end_idx = T_total
+                    if end_idx - start_idx < self.least_sample:
                         break
                     data = {
                         'sources': {},
@@ -105,6 +111,7 @@ class WaveDataset(WSJ0Dataset):
                 data['ID'] = id
             
                 self.json_data.append(data)
+        print(len(self.json_data), flush=True)
         
     def __getitem__(self, idx):
         """
@@ -115,21 +122,28 @@ class WaveDataset(WSJ0Dataset):
         """
         data = self.json_data[idx]
         sources = []
+
+        mixture_data = data['mixture']
+        start, end = mixture_data['start'], mixture_data['end']
+        wav_path = os.path.join(self.wav_root, mixture_data['path'])
+        wave, _ = torchaudio.load(wav_path)
+        mixture = wave[:, start: end]
         
         source_data = data['sources']
         start, end = source_data['start'], source_data['end']
         wav_path = source_data['path']
         wave, _ = torchaudio.load(wav_path)
         wave = wave[:, start: end]
+
+        wav_len = end - start
+        if self.chunk and wav_len < self.samples:
+            P = self.samples - wav_len
+            wave = F.pad(wave, (0, P), "constant")
+            mixture = F.pad(mixture, (0, P), "constant")
+        
         sources.append(wave)
         
         sources = torch.cat(sources, dim=0)
-        
-        mixture_data = data['mixture']
-        start, end = mixture_data['start'], mixture_data['end']
-        wav_path = os.path.join(self.wav_root, mixture_data['path'])
-        wave, _ = torchaudio.load(wav_path)
-        mixture = wave[:, start: end]
             
         segment_ID = self.json_data[idx]['ID'] + '_{}-{}'.format(start, end)
         
@@ -149,7 +163,7 @@ class WaveTrainDataset(WaveDataset):
 
 class WaveEvalDataset(WaveDataset):
     def __init__(self, wav_root, list_path, max_samples=None, n_sources=2, chunk=False):
-        super().__init__(wav_root, list_path, n_sources=n_sources, chunk=chunk)
+        super().__init__(wav_root, list_path, samples=max_samples, least_sample=0, n_sources=n_sources, chunk=chunk)
 
         # wav_root = os.path.abspath(wav_root)
         # list_path = os.path.abspath(list_path)
@@ -164,7 +178,8 @@ class WaveEvalDataset(WaveDataset):
         #         wave, _ = torchaudio.load(wav_path)
                 
         #         _, T_total = wave.size()
-                
+
+    # TODO: 這邊的 max_sample 要注意        
         #         if max_samples is None:
         #             samples = T_total
         #         else:

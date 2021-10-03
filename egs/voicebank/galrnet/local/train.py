@@ -24,7 +24,8 @@ parser.add_argument('--duration', type=float, default=2, help='Duration')
 parser.add_argument('--valid_duration', type=float, default=4, help='Duration for valid dataset for avoiding memory error.')
 parser.add_argument('--enc_bases', type=str, default='trainable', choices=['trainable','Fourier','trainableFourier','Complex'], help='Encoder type')
 parser.add_argument('--dec_bases', type=str, default='trainable', choices=['trainable','Fourier','trainableFourier', 'pinv','Complex'], help='Decoder type')
-# parser.add_argument('--complex_channel', type=int, default=1)
+parser.add_argument('--no-low-dim', dest='low_dim', action='store_false')
+parser.set_defaults(low_dim=True)
 parser.add_argument('--enc_nonlinear', type=str, default=None, help='Non-linear function of encoder')
 parser.add_argument('--window_fn', type=str, default='hamming', help='Window function')
 parser.add_argument('--n_bases', '-D', type=int, default=64, help='# bases')
@@ -75,6 +76,8 @@ def main(args):
         args.enc_nonlinear = None
     if args.max_norm is not None and args.max_norm == 0:
         args.max_norm = None
+
+    print(args.low_dim)
     model = GALRNet(
         args.n_bases, args.kernel_size, stride=args.stride, enc_bases=args.enc_bases, dec_bases=args.dec_bases, enc_nonlinear=args.enc_nonlinear, window_fn=args.window_fn,
         sep_hidden_channels=args.sep_hidden_channels, 
@@ -83,7 +86,7 @@ def main(args):
         mask_nonlinear=args.mask_nonlinear,
         causal=args.causal,
         n_sources=args.n_sources,
-        low_dimension=True
+        low_dimension=args.low_dim
     )
     print(model)
     print("# Parameters: {}".format(model.num_parameters))

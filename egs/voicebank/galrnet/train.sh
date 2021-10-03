@@ -106,6 +106,7 @@ train.py \
 -Q ${Q} \
 -N ${N} \
 -J ${J} \
+--no-low-dim \
 --causal ${causal} \
 --sep_norm ${sep_norm} \
 --sep_dropout ${sep_dropout} \

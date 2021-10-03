@@ -192,7 +192,8 @@ class TrainerBase:
             
             estimated_sources = self.model(mixture)
             # loss = self.pit_criterion(estimated_sources[:,0], sources)
-            loss = -torch.mean(cal_sisnr(estimated_sources[:,0], torch.squeeze(sources)))
+            # print(estimated_sources.shape)
+            loss = -torch.mean(cal_sisnr(estimated_sources[:,0], torch.squeeze(sources, dim=1)))
             
             self.optimizer.zero_grad()
             loss.backward()

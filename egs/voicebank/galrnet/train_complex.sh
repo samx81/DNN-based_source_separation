@@ -63,7 +63,7 @@ gpu_id="0"
 . ./path.sh
 . parse_options.sh || exit 1
 
-tag="complex${tag}"
+tag="complex_${tag}"
 prefix=""
 
 if [ ${enc_bases} = 'trainable' -a -n "${enc_nonlinear}" -a ${dec_bases} != 'pinv' ]; then
@@ -113,6 +113,7 @@ train.py \
 -Q ${Q} \
 -N ${N} \
 -J ${J} \
+--no-low-dim \
 --stride ${kernel_shift} \
 --causal ${causal} \
 --sep_norm ${sep_norm} \

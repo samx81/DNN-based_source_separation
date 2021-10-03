@@ -5,6 +5,7 @@ from utils.utils_tasnet import choose_layer_norm
 from models.dprnn import IntraChunkRNN as LocallyRecurrentBlock
 
 EPS=1e-12
+import random
 
 class GALR(nn.Module):
     def __init__(self, num_features, hidden_channels, num_blocks=6, num_heads=8, norm=True, dropout=0.1, low_dimension=True, causal=False, eps=EPS, **kwargs):
@@ -12,9 +13,10 @@ class GALR(nn.Module):
         
         # Network confguration
         net = []
-        
-        for _ in range(num_blocks):
-            net.append(GALRBlock(num_features, hidden_channels, num_heads=num_heads, norm=norm, dropout=dropout, low_dimension=low_dimension, causal=causal, eps=eps, **kwargs))
+
+        net.append(GALRBlock(num_features, hidden_channels, num_heads=num_heads, norm=norm, dropout=dropout, low_dimension=low_dimension, causal=causal, eps=eps, **kwargs))
+        for _ in range(num_blocks-1):
+            net.append(GALRBlock(num_features, hidden_channels, random_swap=False, num_heads=num_heads, norm=norm, dropout=dropout, low_dimension=low_dimension, causal=causal, eps=eps, **kwargs))
             
         self.net = nn.Sequential(*net)
 
@@ -30,10 +32,11 @@ class GALR(nn.Module):
         return output
 
 class GALRBlock(nn.Module):
-    def __init__(self, num_features, hidden_channels, num_heads=8, causal=False, norm=True, dropout=0.1, low_dimension=True, eps=EPS, **kwargs):
+    def __init__(self, num_features, hidden_channels, random_swap=False, num_heads=8, causal=False, norm=True, dropout=0.1, low_dimension=True, eps=EPS, **kwargs):
         super().__init__()
         
         self.intra_chunk_block = LocallyRecurrentBlock(num_features, hidden_channels=hidden_channels, norm=norm, eps=eps)
+        self.random_swap= random_swap
 
         if low_dimension:
             chunk_size = kwargs['chunk_size']
@@ -49,9 +52,31 @@ class GALRBlock(nn.Module):
         Returns:
             output (batch_size, num_features, S, chunk_size)
         """
+        if self.random_swap:
+            S = input.shape[2]
+            swap_percent = 0.2
+
+            swap_num = S // swap_percent
+            swap_num = random.randint(0, swap_num)
+            swap_list = []
+            indices = torch.arange(S).cuda()
+            for i in range(int(swap_num)):
+                a, b = random.randint(0, S-1), random.randint(0, S-1)
+                swap_list.append((a,b))
+                indices[a]=b
+                indices[b]=a
+            input = torch.index_select(input, 2, indices)
+
         x = self.intra_chunk_block(input)
         output = self.inter_chunk_block(x)
-        
+        if self.random_swap:
+            indices = torch.arange(S).cuda()
+            for i in range(int(swap_num)):
+                a, b = swap_list.pop()
+                indices[a]=b
+                indices[b]=a
+            output = torch.index_select(output, 2, indices)
+
         return output
 
 class GloballyAttentiveBlockBase(nn.Module):
