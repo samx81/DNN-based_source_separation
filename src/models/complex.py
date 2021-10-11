@@ -64,8 +64,6 @@ class STFT(nn.Module):
 
 
     def forward(self, input):
-
-
         stft_stride = self.stride
         stft_window_size = self.window_size
         stft_fftsize = self.fftsize

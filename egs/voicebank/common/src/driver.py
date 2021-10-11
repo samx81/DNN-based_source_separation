@@ -17,6 +17,24 @@ from criterion.pit import pit
 BITS_PER_SAMPLE_WSJ0 = 16
 MIN_PESQ = -0.5
 
+class MyNegSISNR(nn.Module):
+    def __init__(self, eps=1e-8):
+        super().__init__()
+
+        self.eps = eps
+        
+    def forward(self, input, target):
+        """
+        Args:
+            input (batch_size, T) or (batch_size, n_sources, T), or (batch_size, n_sources, n_mics, T)
+            target (batch_size, T) or (batch_size, n_sources, T) or (batch_size, n_sources, n_mics, T)
+        Returns:
+            loss (batch_size,) or (batch_size, n_sources) or (batch_size, n_sources, n_mics)
+        """
+        
+        return -torch.mean(cal_sisnr(input, target, self.eps))
+    
+
 def cal_sisnr(x, s, eps=1e-8):
     """
     Arguments:
@@ -68,7 +86,7 @@ class TrainerBase:
         
         self.model = model
         
-        self.pit_criterion = pit_criterion
+        self.criterion = pit_criterion
         self.optimizer = optimizer
         
         self._reset(args)
@@ -87,6 +105,9 @@ class TrainerBase:
         os.makedirs(self.sample_dir, exist_ok=True)
         
         self.epochs = args.epochs
+
+        self.noise_loss = args.noise_loss
+        print(f'train with noise:{self.noise_loss}')
         
         self.train_loss = torch.empty(self.epochs)
         self.valid_loss = torch.empty(self.epochs)
@@ -190,10 +211,12 @@ class TrainerBase:
                 mixture = mixture.cuda()
                 sources = sources.cuda()
             
-            estimated_sources = self.model(mixture)
+            estimated_sources, _ = self.model(mixture)
             # loss = self.pit_criterion(estimated_sources[:,0], sources)
-            # print(estimated_sources.shape)
-            loss = -torch.mean(cal_sisnr(estimated_sources[:,0], torch.squeeze(sources, dim=1)))
+            # print(estimated_sources.shape, sources.shape)
+            loss = self.criterion(estimated_sources[:,0], sources[:,0])
+            if self.noise_loss:
+                loss += self.criterion(estimated_sources[:,1], sources[:,1])
             
             self.optimizer.zero_grad()
             loss.backward()
@@ -229,9 +252,9 @@ class TrainerBase:
                 if self.use_cuda:
                     mixture = mixture.cuda()
                     sources = sources.cuda()
-                output = self.model(mixture)
+                output, _ = self.model(mixture)
                 # loss, _ = self.pit_criterion(output[:,0], sources, batch_mean=False)
-                loss = -torch.mean(cal_sisnr(output[:,0], torch.squeeze(sources,0)))
+                loss = self.criterion(output[:,0], torch.squeeze(sources,0))
                 # loss = loss.sum(dim=0)
                 valid_loss += loss.item()
                 
@@ -337,7 +360,7 @@ class TesterBase:
                 loss_mixture = self.pit_criterion(mixture, sources, batch_mean=False)
                 loss_mixture = loss_mixture.sum(dim=0)
                 
-                output = self.model(mixture)
+                output, _ = self.model(mixture)
                 output = output[:,0] # -> only need 1st output
                 
                 loss = self.pit_criterion(output, sources.squeeze(dim=1), batch_mean=False)

@@ -1,3 +1,4 @@
+from sys import flags
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -45,7 +46,7 @@ class GALRNet(nn.Module):
             self.window_fn = kwargs['window_fn']    
         else:
             self.window_fn = None
-        print(self.window_fn)
+        print(f'window_fn:{self.window_fn}')
         # Separator configuration
         self.sep_hidden_channels = sep_hidden_channels
         self.sep_chunk_size, self.sep_hop_size, self.sep_down_chunk_size = sep_chunk_size, sep_hop_size, sep_down_chunk_size
@@ -59,12 +60,15 @@ class GALRNet(nn.Module):
         self.sep_norm = sep_norm
         self.mask_nonlinear = mask_nonlinear
         
+        
         self.n_sources = n_sources
         self.eps = eps
         
         # Network configuration
         encoder, decoder = choose_bases(n_bases, kernel_size=kernel_size, stride=stride, enc_bases=enc_bases, dec_bases=dec_bases, **kwargs)
-        
+        random_mask = kwargs.get('random_mask', None)
+        self.local_att = kwargs.get('local_att', None)
+        print(kwargs)
         self.encoder = encoder
         self.separator = Separator(
             n_bases, hidden_channels=sep_hidden_channels,
@@ -73,8 +77,7 @@ class GALRNet(nn.Module):
             low_dimension=low_dimension,
             causal=causal,
             n_sources=n_sources,
-            eps=eps
-            
+            eps=eps, random_mask=random_mask,local_att=self.local_att
         )
         self.decoder = decoder
         
@@ -83,7 +86,7 @@ class GALRNet(nn.Module):
     def forward(self, input):
         output, latent = self.extract_latent(input)
         
-        return output
+        return output, latent
         
     def extract_latent(self, input):
         """
@@ -139,7 +142,8 @@ class GALRNet(nn.Module):
             'mask_nonlinear': self.mask_nonlinear,
             'causal': self.causal,
             'n_sources': self.n_sources,
-            'eps': self.eps
+            'eps': self.eps,
+            'local_att': self.local_att
         }
     
         return package
@@ -167,6 +171,7 @@ class GALRNet(nn.Module):
         low_dimension = package['low_dimension']
         
         eps = package['eps']
+        local_att = package.get('local_att', False)
         
         model = cls(
             n_bases, kernel_size, stride=stride, enc_bases=enc_bases, dec_bases=dec_bases, enc_nonlinear=enc_nonlinear, window_fn=window_fn,
@@ -177,7 +182,7 @@ class GALRNet(nn.Module):
             causal=causal,
             n_sources=n_sources,
             low_dimension=low_dimension,
-            eps=eps
+            eps=eps, local_att=local_att
         )
         
         return model
@@ -200,7 +205,9 @@ class Separator(nn.Module):
         low_dimension=True,
         causal=True,
         n_sources=2,
-        eps=EPS
+        eps=EPS,
+        random_mask=False,
+        local_att=False
     ):
         super().__init__()
         
@@ -222,7 +229,8 @@ class Separator(nn.Module):
                 norm=norm, dropout=dropout,
                 low_dimension=low_dimension,
                 causal=causal,
-                eps=eps
+                eps=eps,
+                random_mask=random_mask,local_att=local_att
             )
         else:
             self.galr = GALR(
@@ -231,7 +239,8 @@ class Separator(nn.Module):
                 norm=norm, dropout=dropout,
                 low_dimension=low_dimension,
                 causal=causal,
-                eps=eps
+                eps=eps,
+                random_mask=random_mask,local_att=local_att
             )
         self.overlap_add1d = OverlapAdd1d(chunk_size, hop_size)
         self.prelu = nn.PReLU()
@@ -244,6 +253,8 @@ class Separator(nn.Module):
             self.mask_nonlinear = nn.Sigmoid()
         elif mask_nonlinear == 'softmax':
             self.mask_nonlinear = nn.Softmax(dim=1)
+        elif mask_nonlinear == 'tanh':
+            self.mask_nonlinear = nn.Tanh()
         else:
             raise ValueError("Cannot support {}".format(mask_nonlinear))
             

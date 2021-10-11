@@ -40,7 +40,7 @@ J=8
 sep_norm=1
 sep_nonlinear='relu'
 sep_dropout=1e-1
-mask_nonlinear='relu'
+mask_nonlinear='tanh'
 causal=0
 
 # Criterion

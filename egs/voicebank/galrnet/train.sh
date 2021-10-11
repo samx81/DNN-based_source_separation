@@ -9,6 +9,7 @@ sr=${sr_k}000
 duration=4
 valid_duration=10
 max_or_min='min'
+random_mask=True
 
 train_wav_root="data/voicebank/tr"
 valid_wav_root="data/voicebank/cv"
@@ -47,7 +48,7 @@ weight_decay=1e-6
 max_norm=5 # 0 is handled as no clipping
 
 batch_size=4
-epochs=100
+epochs=60
 
 use_cuda=1
 overwrite=0
@@ -106,7 +107,6 @@ train.py \
 -Q ${Q} \
 -N ${N} \
 -J ${J} \
---no-low-dim \
 --causal ${causal} \
 --sep_norm ${sep_norm} \
 --sep_dropout ${sep_dropout} \

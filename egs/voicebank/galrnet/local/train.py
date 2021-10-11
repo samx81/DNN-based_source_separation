@@ -10,7 +10,9 @@ from utils.utils import set_seed
 from dataset import WaveTrainDataset, WaveEvalDataset, TrainDataLoader, EvalDataLoader
 from adhoc_driver import AdhocTrainer
 from models.galrnet import GALRNet
-from criterion.sdr import NegSISDR
+from criterion.sdr import NegSISDR, ThresholdedSNR
+from criterion.stft_loss import DEMUCSLoss, MagMSELoss, CombinePFPLoss
+from driver import MyNegSISNR
 from criterion.pit import PIT1d
 
 parser = argparse.ArgumentParser(description="Training of Conv-TasNet")
@@ -21,10 +23,13 @@ parser.add_argument('--train_list_path', type=str, default=None, help='Path for 
 parser.add_argument('--valid_list_path', type=str, default=None, help='Path for mix_<n_sources>_spk_<max,min>_cv_mix')
 parser.add_argument('--sr', type=int, default=10, help='Sampling rate')
 parser.add_argument('--duration', type=float, default=2, help='Duration')
+parser.add_argument('--random_mask', default=False, action='store_true')
 parser.add_argument('--valid_duration', type=float, default=4, help='Duration for valid dataset for avoiding memory error.')
 parser.add_argument('--enc_bases', type=str, default='trainable', choices=['trainable','Fourier','trainableFourier','Complex'], help='Encoder type')
 parser.add_argument('--dec_bases', type=str, default='trainable', choices=['trainable','Fourier','trainableFourier', 'pinv','Complex'], help='Decoder type')
 parser.add_argument('--no-low-dim', dest='low_dim', action='store_false')
+parser.add_argument('--noise_loss', default=False, action='store_true')
+parser.add_argument('--local_att', default=False, action='store_true')
 parser.set_defaults(low_dim=True)
 parser.add_argument('--enc_nonlinear', type=str, default=None, help='Non-linear function of encoder')
 parser.add_argument('--window_fn', type=str, default='hamming', help='Window function')
@@ -42,7 +47,7 @@ parser.add_argument('--sep_dropout', type=float, default=0.1, help='Dropout rate
 parser.add_argument('--mask_nonlinear', type=str, default='sigmoid', help='Non-linear function of mask estiamtion')
 parser.add_argument('--causal', type=int, default=0, help='Causality')
 parser.add_argument('--n_sources', type=int, default=None, help='# speakers')
-parser.add_argument('--criterion', type=str, default='sisdr', choices=['sisdr'], help='Criterion')
+parser.add_argument('--criterion', type=str, default='sisdr', choices=['pfp','sisdr', 'this_sisdr', 'threshold_snr','demucs_l1','demucs_mse','mse'], help='Criterion')
 parser.add_argument('--optimizer', type=str, default='adam', choices=['sgd', 'adam', 'rmsprop'], help='Optimizer, [sgd, adam, rmsprop]')
 parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate. Default: 1e-3')
 parser.add_argument('--weight_decay', type=float, default=0, help='Weight decay (L2 penalty). Default: 0')
@@ -64,32 +69,34 @@ def main(args):
     overlap = samples//2
     max_samples = int(args.sr * args.valid_duration)
     
-    train_dataset = WaveTrainDataset(args.train_wav_root, args.train_list_path, samples=samples, overlap=overlap, n_sources=args.n_sources)
+    train_dataset = WaveTrainDataset(args.train_wav_root, args.train_list_path, samples=samples, overlap=overlap, n_sources=args.n_sources,noise_loss=args.noise_loss)
     valid_dataset = WaveEvalDataset(args.valid_wav_root, args.valid_list_path, max_samples=max_samples, n_sources=args.n_sources)
     print("Training dataset includes {} samples.".format(len(train_dataset)))
     print("Valid dataset includes {} samples.".format(len(valid_dataset)))
     
     loader = {}
     loader['train'] = TrainDataLoader(train_dataset, batch_size=args.batch_size, num_workers=8,shuffle=True)
-    loader['valid'] = EvalDataLoader(valid_dataset, batch_size=1, num_workers=8, shuffle=False)
+    loader['valid'] = EvalDataLoader(valid_dataset, batch_size=1, num_workers=2, shuffle=False)
     if not args.enc_nonlinear:
         args.enc_nonlinear = None
     if args.max_norm is not None and args.max_norm == 0:
         args.max_norm = None
 
-    print(args.low_dim)
+    print(f'uses low_dim :{args.low_dim}')
     model = GALRNet(
         args.n_bases, args.kernel_size, stride=args.stride, enc_bases=args.enc_bases, dec_bases=args.dec_bases, enc_nonlinear=args.enc_nonlinear, window_fn=args.window_fn,
         sep_hidden_channels=args.sep_hidden_channels, 
         sep_chunk_size=args.sep_chunk_size, sep_hop_size=args.sep_hop_size, sep_down_chunk_size=args.sep_down_chunk_size, sep_num_blocks=args.sep_num_blocks,
         sep_num_heads=args.sep_num_heads, sep_norm=args.sep_norm, sep_dropout=args.sep_dropout,
         mask_nonlinear=args.mask_nonlinear,
-        causal=args.causal,
+        causal=args.causal, random_mask=args.random_mask,
         n_sources=args.n_sources,
-        low_dimension=args.low_dim
+        low_dimension=args.low_dim, local_att=args.local_att
     )
     print(model)
     print("# Parameters: {}".format(model.num_parameters))
+
+    # GALRNet returns waveform
 
     if args.use_cuda:
         if torch.cuda.is_available():
@@ -113,7 +120,20 @@ def main(args):
     
     # Criterion
     if args.criterion == 'sisdr':
+        criterion = MyNegSISNR()
+    elif args.criterion == 'this_sisdr':
         criterion = NegSISDR()
+    elif args.criterion == 'threshold_snr':
+        criterion = ThresholdedSNR()
+    elif args.criterion == 'demucs_l1':
+        criterion = DEMUCSLoss('l1')
+    elif args.criterion == 'demucs_mse':
+        criterion = DEMUCSLoss('l2')
+    elif args.criterion == 'mse':
+        criterion = MagMSELoss()
+    elif args.criterion == 'pfp':
+        criterion = MyNegSISNR()
+        criterion = CombinePFPLoss(criterion, 1000)
     else:
         raise ValueError("Not support criterion {}".format(args.criterion))
     
