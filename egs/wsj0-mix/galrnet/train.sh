@@ -28,6 +28,10 @@ enc_return_complex=0 # enc_return_complex is activated if enc_basis or dec_basis
 D=64
 M=16 # M corresponds to the window length (samples) in this script.
 
+# "n_filters": 512,      # 256, 512, 256
+# "kernel_size": 400,    # 16, 400, 16
+# "kernel_shift": 100,   # 8, 100, 8
+
 # Separator
 H=128
 K=100
@@ -112,6 +116,7 @@ train.py \
 -Q ${Q} \
 -N ${N} \
 -J ${J} \
+--stride ${kernel_shift} \
 --causal ${causal} \
 --sep_norm ${sep_norm} \
 --sep_dropout ${sep_dropout} \
