@@ -2,7 +2,7 @@
 DNNによる音源分離（PyTorch実装）
 
 ## 新しい情報
-- v0.6.0: D3Netの学習と推論・評価のスクリプトを追加．
+- v0.6.1: モジュールの追加．
 
 ## モデル
 | モデル | 参考文献 | 実装 |
@@ -34,7 +34,8 @@ DNNによる音源分離（PyTorch実装）
 | :---: | :---: | :---: |
 | Depthwise-separable convolution |  | ✔ |
 | Gated Linear Units |  | ✔ |
-| FiLM | [FiLM: Visual Reasoning with a General Conditioning Layer](https://arxiv.org/abs/1709.07871) | ✔ |
+| FiLM (Feature-wise Linear Modulation) | [FiLM: Visual Reasoning with a General Conditioning Layer](https://arxiv.org/abs/1709.07871) | ✔ |
+| PoCM (Point-wise Convolutional Modulation) | [LaSAFT: Latent Source Attentive Frequency Transformation for Conditioned Source Separation](https://arxiv.org/abs/2010.11631) | ✔ |
 
 ## 学習に関する方法
 | 方法 | 参考文献 | 実装 |

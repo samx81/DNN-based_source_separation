@@ -1,10 +1,11 @@
+import warnings
 import math
 
 import torch
 
 EPS = 1e-12
 
-def ideal_binary_mask(input):
+def compute_ideal_binary_mask(input):
     """
     Args:
         input <torch.Tensor>: Complex or nonnegative tensor with shape of (n_sources, n_bins, n_frames) or (batch_size, n_sources, n_bins, n_frames)
@@ -44,8 +45,8 @@ def ideal_binary_mask(input):
         raise ValueError("Not support {}-dimension".format(n_dims))
     
     return mask
-    
-def ideal_ratio_mask(input, eps=EPS):
+   
+def compute_ideal_ratio_mask(input, eps=EPS):
     """
     Args:
         input <torch.Tensor>: Complex or nonnegative tensor with shape of (n_sources, n_bins, n_frames) or (batch_size, n_sources, n_bins, n_frames)
@@ -68,7 +69,7 @@ def ideal_ratio_mask(input, eps=EPS):
     
     return mask
 
-def wiener_filter_mask(input, domain=1, eps=EPS):
+def compute_wiener_filter_mask(input, domain=1, eps=EPS):
     """
     Args:
         input <torch.Tensor>: Complex or nonnegative tensor with shape of (n_sources, n_bins, n_frames) or (batch_size, n_sources, n_bins, n_frames)
@@ -93,7 +94,7 @@ def wiener_filter_mask(input, domain=1, eps=EPS):
 
     return mask
 
-def ideal_amplitude_mask(input, eps=EPS):
+def compute_ideal_amplitude_mask(input, eps=EPS):
     """
     Args:
         input <torch.Tensor>: Complex tensor with shape of (n_sources, n_bins, n_frames) or (batch_size, n_sources, n_bins, n_frames)
@@ -117,7 +118,7 @@ def ideal_amplitude_mask(input, eps=EPS):
 Phase sensitive mask
 See "Phase-Sensitive and Recognition-Boosted Speech Separation using Deep Recurrent Neural Networks"
 """
-def phase_sensitive_mask(input, eps=EPS):
+def compute_phase_sensitive_mask(input, eps=EPS):
     """
     Args:
         input <torch.Tensor>: Complex tensor with shape of (n_sources, n_bins, n_frames) or (batch_size, n_sources, n_bins, n_frames)
@@ -140,7 +141,7 @@ def phase_sensitive_mask(input, eps=EPS):
     
     return mask
 
-def ideal_complex_mask(input, eps=EPS):
+def compute_ideal_complex_mask(input, eps=EPS):
     """
     Args:
         input <torch.Tensor>: Complex tensor with shape of (n_sources, n_bins, n_frames) or (batch_size, n_sources, n_bins, n_frames)
@@ -160,6 +161,36 @@ def ideal_complex_mask(input, eps=EPS):
     denominator = (torch.abs(mixture) + eps) * torch.exp(1j * angle)
     mask = input / denominator
 
+    return mask
+
+def ideal_binary_mask(input):
+    warnings.warn("Use compute_ideal_binary_mask instead.", DeprecationWarning)
+    mask = compute_ideal_binary_mask(input)
+    return mask
+
+def ideal_ratio_mask(input, eps=EPS):
+    warnings.warn("Use compute_ideal_ratio_mask instead.", DeprecationWarning)
+    mask = compute_ideal_ratio_mask(input, eps=eps)
+    return mask
+
+def wiener_filter_mask(input, domain=1, eps=EPS):
+    warnings.warn("Use compute_wiener_filter_mask instead.", DeprecationWarning)
+    mask = compute_wiener_filter_mask(input, domain=domain, eps=eps)
+    return mask
+
+def ideal_amplitude_mask(input, eps=EPS):
+    warnings.warn("Use compute_ideal_amplitude_mask instead.", DeprecationWarning)
+    mask = compute_ideal_amplitude_mask(input, eps=eps)
+    return mask
+
+def phase_sensitive_mask(input, eps=EPS):
+    warnings.warn("Use compute_phase_sensitive_mask instead.", DeprecationWarning)
+    mask = compute_phase_sensitive_mask(input, eps=eps)
+    return mask
+
+def ideal_complex_mask(input, eps=EPS):
+    warnings.warn("Use compute_ideal_complex_mask instead.", DeprecationWarning)
+    mask = compute_ideal_complex_mask(input, eps=eps)
     return mask
 
 def multichannel_wiener_filter(mixture, estimated_sources_amplitude, iteration=1, channels_first=True, eps=EPS):
@@ -229,7 +260,7 @@ def multichannel_wiener_filter(mixture, estimated_sources_amplitude, iteration=1
 """
 For multichannel Wiener filter
 """
-def update_em(mixture, estimated_sources, iteration=1, source_parallel=False, eps=EPS):
+def update_em(mixture, estimated_sources, iteration=1, source_parallel=False, bin_parallel=True, frame_parallel=True, eps=EPS):
     """
     Args:
         mixture: (n_channels, n_bins, n_frames)
@@ -258,7 +289,35 @@ def update_em(mixture, estimated_sources, iteration=1, source_parallel=False, ep
        
         v, R = v.unsqueeze(dim=3), R.unsqueeze(dim=2) # (n_sources, n_bins, n_frames, 1), (n_sources, n_bins, 1, n_channels, n_channels)
 
-        inv_Cxx = torch.linalg.inv(Cxx + math.sqrt(eps) * torch.eye(n_channels)) # (n_bins, n_frames, n_channels, n_channels)
+        if bin_parallel:
+            if frame_parallel:
+                inv_Cxx = torch.linalg.inv(Cxx + math.sqrt(eps) * torch.eye(n_channels)) # (n_bins, n_frames, n_channels, n_channels)
+            else:
+                n_frames = Cxx.size(1)
+
+                inv_Cxx = []
+                for frame_idx in range(n_frames):
+                    _Cxx = Cxx[:, frame_idx]
+                    _inv_Cxx = torch.linalg.inv(_Cxx + math.sqrt(eps) * torch.eye(n_channels)) # (n_bins, n_frames, n_channels, n_channels)
+                    inv_Cxx.append(_inv_Cxx)
+                
+                inv_Cxx = torch.stack(inv_Cxx, dim=1)
+        else:
+            inv_Cxx = []
+            if frame_parallel:
+                for _Cxx in Cxx:
+                    _inv_Cxx = torch.linalg.inv(_Cxx + math.sqrt(eps) * torch.eye(n_channels)) # (n_frames, n_channels, n_channels)
+                    inv_Cxx.append(_inv_Cxx)
+            else:
+                for _Cxx in Cxx:
+                    _inv_Cxx = []
+                    for __Cxx in _Cxx:
+                        __inv_Cxx = torch.linalg.inv(__Cxx + math.sqrt(eps) * torch.eye(n_channels)) # (n_channels, n_channels)
+                        _inv_Cxx.append(__inv_Cxx)
+                    _inv_Cxx = torch.stack(_inv_Cxx, dim=0)
+                    inv_Cxx.append(_inv_Cxx)
+
+            inv_Cxx = torch.stack(inv_Cxx, dim=0)
 
         if source_parallel:
             gain = v.unsqueeze(dim=4) * torch.sum(R.unsqueeze(dim=5) * inv_Cxx.unsqueeze(dim=2), dim=4) # (n_sources, n_bins, n_frames, n_channels, n_channels)
@@ -313,11 +372,11 @@ def get_stats(spectrogram, eps=EPS):
 
 def _test_amplitude(amplitude, method='IBM'):
     if method == 'IBM':
-        mask = ideal_binary_mask(amplitude)
+        mask = compute_ideal_binary_mask(amplitude)
     elif method == 'IRM':
-        mask = ideal_ratio_mask(amplitude)
+        mask = compute_ideal_ratio_mask(amplitude)
     elif method == 'WFM':
-        mask = wiener_filter_mask(amplitude)
+        mask = compute_wiener_filter_mask(amplitude)
     else:
         raise NotImplementedError("Not support {}".format(method))
     
@@ -331,11 +390,11 @@ def _test_amplitude(amplitude, method='IBM'):
 
 def _test_spectrogram(spectrogram, method='PSM'):
     if method == 'IAM':
-        mask = ideal_amplitude_mask(spectrogram)
+        mask = compute_ideal_amplitude_mask(spectrogram)
     elif method == 'PSM':
-        mask = phase_sensitive_mask(spectrogram)
+        mask = compute_phase_sensitive_mask(spectrogram)
     elif method == 'ICM':
-        mask = ideal_complex_mask(spectrogram)
+        mask = compute_ideal_complex_mask(spectrogram)
     else:
         raise NotImplementedError("Not support {}".format(method))
     
