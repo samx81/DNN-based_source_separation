@@ -45,10 +45,14 @@ class WaveDataset(WSJ0Dataset):
                 ff = f.readlines()
                 noise_dict = {line.split()[0]: line.split()[1] for line in ff}
 
-
-        with open(clean_list_path) as f:
-            ff = f.readlines()
-            clean_dict = {line.split()[0]: line.split()[1] for line in ff}
+        if not os.path.exists(clean_list_path):
+            print("No Clean Ref. files, make sure you're running eval stage.")
+            print("Will use noisy data as clean ref.")
+            clean_dict = noisy_dict
+        else:
+            with open(clean_list_path) as f:
+                ff = f.readlines()
+                clean_dict = {line.split()[0]: line.split()[1] for line in ff}
 
         if os.path.exists(length_list_path):
             with open(length_list_path, 'r') as f:
@@ -57,14 +61,14 @@ class WaveDataset(WSJ0Dataset):
         else:
             len_dict = {}
             print_str = ''
-            for id in tqdm(sorted(clean_dict.keys()),"Preparing Data Info..."):
-                len_dict[id] = torchaudio.info(clean_dict[id]).num_frames
+            for id in tqdm(sorted(noisy_dict.keys()),"Preparing Data Info..."):
+                len_dict[id] = torchaudio.info(noisy_dict[id]).num_frames
                 print_str += f'{id} {len_dict[id]}\n'
             with open(length_list_path, 'w') as f:
                 f.write(print_str)
 
 
-        for id in tqdm(clean_dict.keys(),"Loading Dataset..."):
+        for id in tqdm(noisy_dict.keys(),"Loading Dataset..."):
             # wave, _ = torchaudio.load(clean_dict[id])
             
             # _, T_total = wave.size()

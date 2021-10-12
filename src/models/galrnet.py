@@ -83,6 +83,13 @@ class GALRNet(nn.Module):
         
         self.num_parameters = self._get_num_parameters()
         
+        # Load custom child code
+        self.load()
+        
+    def load(self):
+        pass
+
+
     def forward(self, input):
         output, latent = self.extract_latent(input)
         
