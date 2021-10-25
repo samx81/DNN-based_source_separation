@@ -153,7 +153,7 @@ class GloballyFastAttentiveBlock(GloballyAttentiveBlockBase):
             self.dropout = False
         
         if self.norm:
-            norm_name = 'cLN' if causal else 'gLM'
+            norm_name = 'cLN' if causal else 'gLN'
             self.norm2d_out = choose_layer_norm(norm_name, num_features, causal=causal, eps=eps)
         
     def forward(self, input):
@@ -313,7 +313,7 @@ class LowDimensionGloballyAttentiveBlock(GloballyAttentiveBlockBase):
             self.dropout = False
         
         if self.norm:
-            norm_name = 'cLN' if causal else 'gLM'
+            norm_name = 'cLN' if causal else 'gLN'
             self.norm2d_out = choose_layer_norm(norm_name, num_features, causal=causal, eps=eps)
         
         self.fc_inv = nn.Linear(down_chunk_size, chunk_size)

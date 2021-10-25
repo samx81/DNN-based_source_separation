@@ -14,3 +14,5 @@ echo $sed_str
 sed -i $sed_str ${exp_test_dir}/sep.scp
 cd tenet
 ./inf_galr.sh $exp_test_dir
+
+bat ${exp_test_dir}/pesq-wb

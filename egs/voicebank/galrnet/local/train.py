@@ -25,14 +25,16 @@ parser.add_argument('--sr', type=int, default=10, help='Sampling rate')
 parser.add_argument('--duration', type=float, default=2, help='Duration')
 parser.add_argument('--random_mask', default=False, action='store_true')
 parser.add_argument('--valid_duration', type=float, default=4, help='Duration for valid dataset for avoiding memory error.')
-parser.add_argument('--enc_bases', type=str, default='trainable', choices=['trainable','Fourier','trainableFourier','Complex'], help='Encoder type')
-parser.add_argument('--dec_bases', type=str, default='trainable', choices=['trainable','Fourier','trainableFourier', 'pinv','Complex'], help='Decoder type')
+parser.add_argument('--enc_basis', type=str, default='trainable', choices=['DCCRN','DCTCN','trainable','Fourier','trainableFourier','trainableFourierTrainablePhase'], help='Encoder type')
+parser.add_argument('--dec_basis', type=str, default='trainable', choices=['DCCRN','DCTCN','trainable','Fourier','trainableFourier','trainableFourierTrainablePhase', 'pinv'], help='Decoder type')
 parser.add_argument('--no-low-dim', dest='low_dim', action='store_false')
 parser.add_argument('--noise_loss', default=False, action='store_true')
 parser.add_argument('--local_att', default=False, action='store_true')
 parser.set_defaults(low_dim=True)
 parser.add_argument('--enc_nonlinear', type=str, default=None, help='Non-linear function of encoder')
 parser.add_argument('--window_fn', type=str, default='hamming', help='Window function')
+parser.add_argument('--enc_onesided', type=int, default=None, choices=[0, 1, None], help='If true, encoder returns kernel_size // 2 + 1 bins.')
+parser.add_argument('--enc_return_complex', type=int, default=None, choices=[0, 1, None], help='If true, encoder returns complex tensor, otherwise real tensor concatenated real and imaginary part in feature dimension.')
 parser.add_argument('--n_bases', '-D', type=int, default=64, help='# bases')
 parser.add_argument('--kernel_size', '-M', type=int, default=16, help='Kernel size')
 parser.add_argument('--stride', type=int, default=None, help='Stride. If None, stride=kernel_size//2')
@@ -47,7 +49,7 @@ parser.add_argument('--sep_dropout', type=float, default=0.1, help='Dropout rate
 parser.add_argument('--mask_nonlinear', type=str, default='sigmoid', help='Non-linear function of mask estiamtion')
 parser.add_argument('--causal', type=int, default=0, help='Causality')
 parser.add_argument('--n_sources', type=int, default=None, help='# speakers')
-parser.add_argument('--criterion', type=str, default='sisdr', choices=['pfp','sisdr', 'this_sisdr', 'threshold_snr','demucs_l1','demucs_mse','mse'], help='Criterion')
+parser.add_argument('--criterion', type=str, default='sisdr', choices=['pfp_sisdr','pfp_l2','pfp_thsnr','sisdr', 'this_sisdr', 'threshold_snr','demucs_l1','demucs_mse','mse'], help='Criterion')
 parser.add_argument('--optimizer', type=str, default='adam', choices=['sgd', 'adam', 'rmsprop'], help='Optimizer, [sgd, adam, rmsprop]')
 parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate. Default: 1e-3')
 parser.add_argument('--weight_decay', type=float, default=0, help='Weight decay (L2 penalty). Default: 0')
@@ -84,7 +86,8 @@ def main(args):
 
     print(f'uses low_dim :{args.low_dim}')
     model = GALRNet(
-        args.n_bases, args.kernel_size, stride=args.stride, enc_bases=args.enc_bases, dec_bases=args.dec_bases, enc_nonlinear=args.enc_nonlinear, window_fn=args.window_fn,
+        args.n_bases, args.kernel_size, stride=args.stride, enc_basis=args.enc_basis, dec_basis=args.dec_basis, enc_nonlinear=args.enc_nonlinear, 
+        window_fn=args.window_fn,enc_onesided=args.enc_onesided, enc_return_complex=args.enc_return_complex,
         sep_hidden_channels=args.sep_hidden_channels, 
         sep_chunk_size=args.sep_chunk_size, sep_hop_size=args.sep_hop_size, sep_down_chunk_size=args.sep_down_chunk_size, sep_num_blocks=args.sep_num_blocks,
         sep_num_heads=args.sep_num_heads, sep_norm=args.sep_norm, sep_dropout=args.sep_dropout,
@@ -131,8 +134,16 @@ def main(args):
         criterion = DEMUCSLoss('l2')
     elif args.criterion == 'mse':
         criterion = MagMSELoss()
-    elif args.criterion == 'pfp':
+    elif args.criterion == 'pfp_sisnr':
         criterion = MyNegSISNR()
+        criterion = CombinePFPLoss(criterion, 2000)
+    elif args.criterion == 'pfp_thsnr':
+        # criterion = MyNegSISNR()
+        criterion = ThresholdedSNR()
+        criterion = CombinePFPLoss(criterion, 1000)
+    elif args.criterion == 'pfp_l2':
+        # criterion = MyNegSISNR()
+        criterion = DEMUCSLoss('l2')
         criterion = CombinePFPLoss(criterion, 1000)
     else:
         raise ValueError("Not support criterion {}".format(args.criterion))

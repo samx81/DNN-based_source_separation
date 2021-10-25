@@ -86,9 +86,9 @@ class DPTNet(nn.Module):
         self.decoder = decoder
         
     def forward(self, input):
-        output, _ = self.extract_latent(input)
+        output, latent = self.extract_latent(input)
         
-        return output
+        return output, latent
         
     def extract_latent(self, input):
         """

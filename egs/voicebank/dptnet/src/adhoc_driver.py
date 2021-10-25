@@ -78,10 +78,10 @@ class AdhocTrainer(TrainerBase):
                 mixture = mixture.cuda()
                 sources = sources.cuda()
             
-            estimated_sources = self.model(mixture)
-            loss = -torch.mean(cal_sisnr(estimated_sources[:,0], torch.squeeze(sources,dim=1)))
+            estimated_sources, _ = self.model(mixture)
+            # loss = -torch.mean(cal_sisnr(estimated_sources[:,0], torch.squeeze(sources,dim=1)))
 
-            # loss, _ = self.pit_criterion(estimated_sources, sources)
+            loss = self.criterion(estimated_sources[:,0], sources[:,0])
             
             self.optimizer.zero_grad()
             loss.backward()

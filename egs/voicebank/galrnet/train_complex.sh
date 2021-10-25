@@ -18,10 +18,17 @@ train_list_path="../../../dataset/wsj0-mix/${n_sources}speakers/mix_${n_sources}
 valid_list_path="../../../dataset/wsj0-mix/${n_sources}speakers/mix_${n_sources}_spk_${max_or_min}_cv_mix"
 
 # Encoder & decoder
-enc_bases='Complex' # choose from 'trainable','Fourier', or 'trainableFourier', + 'Complex' 
-dec_bases='Complex' # choose from 'trainable','Fourier', 'trainableFourier', or 'pinv', + 'Complex' 
-enc_nonlinear='relu' # enc_nonlinear is activated if enc_bases='trainable' and dec_bases!='pinv'
-window_fn='hanning' # window_fn is activated if enc_bases='Fourier' or dec_bases='Fourier', 
+enc_basis='trainable' # choose from ['trainable','Fourier', 'trainableFourier', 'trainableFourierTrainablePhase']
+dec_basis='trainable' # choose from ['trainable','Fourier', 'trainableFourier', 'trainableFourierTrainablePhase', 'pinv']
+enc_nonlinear='' # enc_nonlinear is activated if enc_basis='trainable' and dec_basis!='pinv'
+window_fn='' # window_fn is activated if enc_basis or dec_basis in ['Fourier', 'trainableFourier', 'trainableFourierTrainablePhase']
+enc_onesided=0 # enc_onesided is activated if enc_basis or dec_basis in ['Fourier', 'trainableFourier', 'trainableFourierTrainablePhase']
+enc_return_complex=0 # enc_return_complex is activated if enc_basis or dec_basis in ['Fourier', 'trainableFourier', 'trainableFourierTrainablePhase']
+
+# enc_bases='Complex' # choose from 'trainable','Fourier', or 'trainableFourier', + 'Complex' 
+# dec_bases='Complex' # choose from 'trainable','Fourier', 'trainableFourier', or 'pinv', + 'Complex' 
+# enc_nonlinear='relu' # enc_nonlinear is activated if enc_bases='trainable' and dec_bases!='pinv'
+# window_fn='hanning' # window_fn is activated if enc_bases='Fourier' or dec_bases='Fourier', 
              # can be choose from 'hann' or 'hamming', but when complex, window varys from 'default' or 'hanning'  
 D=128
 M=400 # M corresponds to the window length (samples) in this script.

@@ -3,6 +3,8 @@ import os
 import torch
 import torchaudio
 import torch.nn as nn
+import torch.nn.functional as F
+from tqdm import tqdm
 
 from algorithm.frequency_mask import compute_ideal_binary_mask, compute_ideal_ratio_mask, compute_wiener_filter_mask
 
@@ -24,20 +26,38 @@ class WaveDataset(WSJ0Dataset):
         
         if overlap is None:
             overlap = samples//2
-        
+        self.samples = samples    
+        self.least_sample = samples // 4
         self.json_data = []
-        
+
+        length_list_path = list_path+ '_length.list'
+        length_list_exist = False
+        if os.path.exists(length_list_path):
+            length_list_exist = True
+            with open(length_list_path, 'r') as f:
+                ff = f.readlines()
+                len_dict = {line.split()[0]: int(line.split()[1]) for line in ff}
+        else:
+            len_dict = {}
+
         with open(list_path) as f:
-            for line in f:
+            for line in tqdm(f):
                 ID = line.strip()
                 wav_path = os.path.join(wav_root, 'mix', '{}.wav'.format(ID))
                 
-                wave, _ = torchaudio.load(wav_path)
-                _, T_total = wave.size()
+                if length_list_exist:
+                    T_total = len_dict[ID]
+                else:
+                    # wave, _ = torchaudio.load(wav_path)
+                    # _, T_total = wave.size()
+                    T_total = torchaudio.info(wav_path).num_frames
+                    len_dict[ID] = T_total
                 
                 for start_idx in range(0, T_total, samples - overlap):
                     end_idx = start_idx + samples
                     if end_idx > T_total:
+                        end_idx = T_total
+                    if end_idx -start_idx < self.least_sample:
                         break
                     data = {
                         'sources': {},
@@ -61,6 +81,13 @@ class WaveDataset(WSJ0Dataset):
                     data['ID'] = ID
                 
                     self.json_data.append(data)
+            print(len(self.json_data))
+        if not length_list_exist:
+            print_str = ''
+            for id in sorted(len_dict.keys()):
+                print_str += f'{id} {len_dict[id]}\n'
+            with open(length_list_path, 'w') as f:
+                f.write(print_str)
         
     def __getitem__(self, idx):
         """
@@ -76,15 +103,28 @@ class WaveDataset(WSJ0Dataset):
             source_data = data['sources'][key]
             start, end = source_data['start'], source_data['end']
             wav_path = os.path.join(self.wav_root, source_data['path'])
-            wave, _ = torchaudio.load(wav_path, frame_offset=start, num_frames=end-start)
+
+            wav_len = end - start
+
+            wave, _ = torchaudio.load(wav_path, frame_offset=start, num_frames=wav_len)
+            
+            if wav_len < self.samples:
+                P = self.samples - wav_len
+                wave = F.pad(wave, (0, P), "constant")
             sources.append(wave)
+            
         
         sources = torch.cat(sources, dim=0)
         
         mixture_data = data['mixture']
         start, end = mixture_data['start'], mixture_data['end']
+        wav_len = end - start
         wav_path = os.path.join(self.wav_root, mixture_data['path'])
-        mixture, _ = torchaudio.load(wav_path, frame_offset=start, num_frames=end-start)
+        mixture, _ = torchaudio.load(wav_path, frame_offset=start, num_frames=wav_len)
+
+        if wav_len < self.samples:
+            P = self.samples - wav_len
+            mixture = F.pad(mixture, (0,P), "constant")
             
         segment_ID = self.json_data[idx]['ID'] + '_{}-{}'.format(start, end)
         
@@ -104,21 +144,40 @@ class WaveTrainDataset(WaveDataset):
 
 class WaveEvalDataset(WaveDataset):
     def __init__(self, wav_root, list_path, max_samples=None, n_sources=2):
-        super().__init__(wav_root, list_path, n_sources=n_sources)
+        ##super().__init__(wav_root, list_path, n_sources=n_sources)
 
-        wav_root = os.path.abspath(wav_root)
+        self.wav_root = os.path.abspath(wav_root)
         list_path = os.path.abspath(list_path)
 
         self.json_data = []
+
+        length_list_path = list_path+ '_length.list'
+        length_list_exist = False
+        if os.path.exists(length_list_path):
+            length_list_exist = True
+            with open(length_list_path, 'r') as f:
+                ff = f.readlines()
+                len_dict = {line.split()[0]: int(line.split()[1]) for line in ff}
+        else:
+            len_dict = {}
+
         
         with open(list_path) as f:
-            for line in f:
+            for line in tqdm(f):
                 ID = line.strip()
                 wav_path = os.path.join(wav_root, 'mix', '{}.wav'.format(ID))
 
-                wave, _ = torchaudio.load(wav_path)
+                if length_list_exist:
+                    T_total = len_dict[ID]
+                else:
+                    # wave, _ = torchaudio.load(wav_path)
+                    # _, T_total = wave.size()
+                    T_total = torchaudio.info(wav_path).num_frames
+                    len_dict[ID] = T_total
                 
-                _, T_total = wave.size()
+                #wave, _ = torchaudio.load(wav_path)
+                
+                ##_, T_total = wave.size()
                 
                 if max_samples is None:
                     samples = T_total

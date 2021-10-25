@@ -138,14 +138,14 @@ class TrainerBase:
         train_loss = 0
         n_train_batch = len(self.train_loader)
         
-        for idx, (mixture, sources) in enumerate(self.train_loader):
+        for idx, (mixture, sources) in tqdm(enumerate(self.train_loader),total=len(self.train_loader)):
             if self.use_cuda:
                 mixture = mixture.cuda()
                 sources = sources.cuda()
             
-            estimated_sources = self.model(mixture)
+            estimated_sources,_ = self.model(mixture)
             loss, _ = self.pit_criterion(estimated_sources, sources)
-            
+                
             self.optimizer.zero_grad()
             loss.backward()
             

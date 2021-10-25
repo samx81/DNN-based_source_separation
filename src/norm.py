@@ -81,7 +81,7 @@ class CumulativeLayerNorm1d(nn.Module):
         cum_sum = torch.cumsum(step_sum, dim=1) # -> (batch_size, T)
         cum_squared_sum = torch.cumsum(step_pow_sum, dim=1) # -> (batch_size, T)
         
-        cum_num = torch.arange(C, C*(T+1), C, dtype=torch.float) # -> (T, ): [C, 2*C, ..., T*C]
+        cum_num = torch.arange(C, C*(T+1), C, dtype=torch.float).cuda() # -> (T, ): [C, 2*C, ..., T*C]
         cum_mean = cum_sum / cum_num # (batch_size, T)
         cum_squared_mean = cum_squared_sum / cum_num
         cum_var = cum_squared_mean - cum_mean**2

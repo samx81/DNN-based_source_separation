@@ -37,6 +37,7 @@ class TemporalConvNet(nn.Module):
         for idx in range(num_blocks):
             x, skip = self.net[idx](x)
             skip_connection = skip_connection + skip
+            print(skip_connection.shape)
 
         output = skip_connection
         

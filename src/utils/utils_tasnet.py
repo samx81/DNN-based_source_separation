@@ -17,7 +17,7 @@ def choose_basis(hidden_channels, kernel_size, stride=None, enc_basis='trainable
 def choose_layer_norm(name, num_features, causal=False, eps=EPS, **kwargs):
     if name == 'cLN':
         layer_norm = CumulativeLayerNorm1d(num_features, eps=eps)
-    elif name == 'gLN':
+    elif name in ['gLN', 'gLM']:
         if causal:
             raise ValueError("Global Layer Normalization is NOT causal.")
         layer_norm = GlobalLayerNorm(num_features, eps=eps)

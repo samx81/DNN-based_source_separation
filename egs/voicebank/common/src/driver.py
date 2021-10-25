@@ -9,6 +9,7 @@ from mir_eval.separation import bss_eval_sources
 import torch
 import torchaudio
 import torch.nn as nn
+from pystoi import stoi as pystoi
 from tqdm import tqdm
 
 from utils.utils import draw_loss_curve
@@ -254,7 +255,10 @@ class TrainerBase:
                     sources = sources.cuda()
                 output, _ = self.model(mixture)
                 # loss, _ = self.pit_criterion(output[:,0], sources, batch_mean=False)
-                loss = self.criterion(output[:,0], torch.squeeze(sources,0))
+                
+                #  loss = self.criterion(output[:,0], torch.squeeze(sources,0))
+                print(output[:,0].shape, sources[:,0].shape)
+                loss = self.criterion(output[:,0], sources[:,0])
                 # loss = loss.sum(dim=0)
                 valid_loss += loss.item()
                 
@@ -283,7 +287,7 @@ class TrainerBase:
     
     def save_model(self, epoch, model_path='./tmp.pth'):
         if isinstance(self.model, nn.DataParallel):
-            package = self.model.module.get_package()
+            package = self.model.module.get_config()
             package['state_dict'] = self.model.module.state_dict()
         else:
             package = self.model.get_package()
@@ -322,6 +326,7 @@ class TesterBase:
             os.makedirs(self.out_dir, exist_ok=True)
         
         self.use_cuda = args.use_cuda
+        self.metric = args.no_metric
         
         package = torch.load(args.model_path, map_location=lambda storage, loc: storage)
         
@@ -339,15 +344,16 @@ class TesterBase:
         test_si_snr_score = 0
         test_sar = 0
         test_pesq = 0
+        test_stoi = 0
         n_pesq_error = 0
         n_test = len(self.loader.dataset)
 
         print("ID, Loss, Loss improvement, SDR improvement, SI-SNR, SAR, PESQ",flush=True)
-
-        tmp_dir = os.path.join(os.getcwd(), 'tmp')
-        os.makedirs(tmp_dir, exist_ok=True)
-        shutil.copy('./PESQ', os.path.join(tmp_dir, 'PESQ'))
-        os.chdir(tmp_dir)
+        if self.metric:
+            tmp_dir = os.path.join(os.getcwd(), 'tmp')
+            os.makedirs(tmp_dir, exist_ok=True)
+            shutil.copy('./PESQ', os.path.join(tmp_dir, 'PESQ'))
+            os.chdir(tmp_dir)
         
         with torch.no_grad():
             # for idx, (mixture, sources, segment_IDs) in enumerate(self.loader): # tqdm(enumerate(self.loader)):
@@ -373,20 +379,25 @@ class TesterBase:
                 # perm_idx = perm_idx[0] # -> (n_sources,)
                 segment_IDs = segment_IDs[0] # -> <str>
 
+                si_snr_score, sdr_improvement, sar, stoi = 0,0,0,0
+
+                if self.metric:
                 # repeated_mixture = torch.tile(mixture, (self.n_sources, 1))
-                repeated_mixture = mixture
-                result_estimated = bss_eval_sources(
-                    reference_sources=sources.numpy(),
-                    estimated_sources=estimated_sources.numpy()
-                )
-                result_mixed = bss_eval_sources(
-                    reference_sources=sources.numpy(),
-                    estimated_sources=repeated_mixture.numpy()
-                )
-                si_snr_score = si_snr(estimated_sources.numpy(), sources.numpy())
-                sdr_improvement = np.mean(result_estimated[0] - result_mixed[0])
-                # sir_improvement = np.mean(result_estimated[1] - result_mixed[1])
-                sar = np.mean(result_estimated[2])
+                    repeated_mixture = mixture
+                    result_estimated = bss_eval_sources(
+                        reference_sources=sources.numpy(),
+                        estimated_sources=estimated_sources.numpy()
+                    )
+                    result_mixed = bss_eval_sources(
+                        reference_sources=sources.numpy(),
+                        estimated_sources=repeated_mixture.numpy()
+                    )
+                    si_snr_score = si_snr(estimated_sources.numpy(), sources.numpy())
+                    sdr_improvement = np.mean(result_estimated[0] - result_mixed[0])
+                    # sir_improvement = np.mean(result_estimated[1] - result_mixed[1])
+                    sar = np.mean(result_estimated[2])
+                    stoi = pystoi(np.squeeze(sources.numpy()), 
+                                np.squeeze(estimated_sources.numpy()), self.sr) 
 
                 norm = torch.abs(mixture).max()
                 mixture /= norm
@@ -401,17 +412,7 @@ class TesterBase:
                 #     torchaudio.save(mixture_path, signal, sample_rate=self.sr, bits_per_sample=BITS_PER_SAMPLE_WSJ0)
 
                 source, estimated_source = sources, estimated_sources
-                
-                # Target
-                norm = torch.abs(source).max()
-                source /= norm
-                if self.out_dir is not None:
-                    source_path = os.path.join(self.out_dir, "{}-target.wav".format(mixture_ID))
-                else:
-                    source_path = "tmp-target_{}.wav".format(random_ID)
-                signal = source.unsqueeze(dim=0) if source.dim() == 1 else source
-                torchaudio.save(source_path, signal, sample_rate=self.sr, bits_per_sample=BITS_PER_SAMPLE_WSJ0)
-                
+
                 # Estimated source
                 norm = torch.abs(estimated_source).max()
                 estimated_source /= norm
@@ -423,26 +424,36 @@ class TesterBase:
                 torchaudio.save(estimated_path, signal, sample_rate=self.sr, bits_per_sample=BITS_PER_SAMPLE_WSJ0)
                 
                 pesq = 0
-                
-                command = "./PESQ +{} {} {}".format(self.sr, source_path, estimated_path)
-                command += " | grep Prediction | awk '{print $5}'"
-                pesq_output = subprocess.check_output(command, shell=True)
-                pesq_output = pesq_output.decode().strip()
-                
-                if pesq_output == '':
-                    # If processing error occurs in PESQ software, it is regarded as PESQ score is -0.5. (minimum of PESQ)
-                    n_pesq_error += 1
-                    pesq += MIN_PESQ
-                else:
-                    pesq += float(pesq_output)
-                
-                subprocess.call("rm {}".format(source_path), shell=True)
-                # subprocess.call("rm {}".format(estimated_path), shell=True)
-                
-                pesq /= self.n_sources
+                if self.metric:
+                    # Target
+                    norm = torch.abs(source).max()
+                    source /= norm
+                    if self.out_dir is not None:
+                        source_path = os.path.join(self.out_dir, "{}-target.wav".format(mixture_ID))
+                    else:
+                        source_path = "tmp-target_{}.wav".format(random_ID)
+                    signal = source.unsqueeze(dim=0) if source.dim() == 1 else source
+                    torchaudio.save(source_path, signal, sample_rate=self.sr, bits_per_sample=BITS_PER_SAMPLE_WSJ0)
+                    
+                    command = "./PESQ +{} {} {}".format(self.sr, source_path, estimated_path)
+                    command += " | grep Prediction | awk '{print $5}'"
+                    pesq_output = subprocess.check_output(command, shell=True)
+                    pesq_output = pesq_output.decode().strip()
+                    
+                    if pesq_output == '':
+                        # If processing error occurs in PESQ software, it is regarded as PESQ score is -0.5. (minimum of PESQ)
+                        n_pesq_error += 1
+                        pesq += MIN_PESQ
+                    else:
+                        pesq += float(pesq_output)
+                    
+                    subprocess.call("rm {}".format(source_path), shell=True)
+                    # subprocess.call("rm {}".format(estimated_path), shell=True)
+                    
+                    pesq /= self.n_sources
                 # print("{}, {:.3f}, {:.3f}, {:.3f}, {:.3f}, {:.3f}, {:.3f}".format(mixture_ID, loss.item(), loss_improvement, sdr_improvement, sir_improvement, sar, pesq),flush=True)
                 # print("{}, {:.3f}, {:.3f}, {:.3f}, {:.3f}, {:.3f}, {:.3f}".format(mixture_ID, loss.item(), loss_improvement, sdr_improvement, si_snr_score, sar, pesq),flush=True)
-                tqdm.write("{}, {:.3f}, {:.3f}, {:.3f}, {:.3f}, {:.3f}, {:.3f}".format(mixture_ID, loss.item(), loss_improvement, sdr_improvement, si_snr_score, sar, pesq))
+                tqdm.write("{}, {:.3f}, {:.3f}, {:.3f}, {:.3f}, {:.3f}, {:.3f} {:.3f}".format(mixture_ID, loss.item(), loss_improvement, sdr_improvement, si_snr_score, sar, pesq, stoi))
 
 
                 test_loss += loss.item()
@@ -452,6 +463,7 @@ class TesterBase:
                 # test_sir_improvement += sir_improvement
                 test_sar += sar
                 test_pesq += pesq
+                test_stoi += stoi
         
         os.chdir("../") # back to the original directory
 
@@ -462,9 +474,11 @@ class TesterBase:
         test_si_snr_score /= n_test
         test_sar /= n_test
         test_pesq /= n_test
+        test_stoi /= n_test
             
         # print("Loss: {:.3f}, loss improvement: {:3f}, SDR improvement: {:3f}, SIR improvement: {:3f}, SAR: {:3f}, PESQ: {:.3f}".format(test_loss, test_loss_improvement, test_sdr_improvement, test_sir_improvement, test_sar, test_pesq))
-        print("Loss: {:.3f}, loss improvement: {:3f}, SDR improvement: {:3f}, SI-SNR: {:3f}, SAR: {:3f}, PESQ: {:.3f}".format(test_loss, test_loss_improvement, test_sdr_improvement, test_si_snr_score, test_sar, test_pesq))
+        print("Loss: {:.3f}, loss-i: {:3f}, SDRi: {:3f}, SI-SNR: {:3f}, SAR: {:3f}, PESQ: {:.3f}, STOI: {:.3f}".format(
+            test_loss, test_loss_improvement, test_sdr_improvement, test_si_snr_score, test_sar, test_pesq, test_stoi))
         print("Evaluation of PESQ returns error {} times.".format(n_pesq_error))
 
 class Trainer(TrainerBase):

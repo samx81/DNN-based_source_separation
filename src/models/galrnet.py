@@ -1,3 +1,4 @@
+from re import X
 from sys import flags
 import torch
 import torch.nn as nn
@@ -8,6 +9,7 @@ from utils.utils_tasnet import choose_layer_norm
 from models.gtu import GTU1d
 from models.transform import Segment1d, OverlapAdd1d
 from models.galr import GALR
+from dccrn import DCCRN_Encoder,DCCRN_Decoder, DCTCN_Encoder, DCTCN_Decoder
 
 EPS=1e-12
 
@@ -36,7 +38,7 @@ class GALRNet(nn.Module):
         self.n_basis = n_basis
         self.kernel_size, self.stride = kernel_size, stride
         self.enc_basis, self.dec_basis = enc_basis, dec_basis
-        
+        print(enc_basis, dec_basis)
         if enc_basis == 'trainable' and not dec_basis == 'pinv':    
             self.enc_nonlinear = kwargs['enc_nonlinear']
         else:
@@ -71,7 +73,13 @@ class GALRNet(nn.Module):
         self.eps = eps
         
         # Network configuration
-        encoder, decoder = choose_filterbank(n_basis, kernel_size=kernel_size, stride=stride, enc_basis=enc_basis, dec_basis=dec_basis, **kwargs)
+        if 'DCCRN' in [enc_basis, dec_basis]:
+            encoder, decoder = DCCRN_Encoder(kernel_num=[32,64,64,64], kernel_size=3), DCCRN_Decoder(kernel_num=[32,64,64,64], kernel_size=3)
+        elif 'DCTCN' in [enc_basis, dec_basis]:
+            # self.n_basis = n_basis = 8192
+            encoder, decoder = DCTCN_Encoder(causal=causal), DCTCN_Decoder()
+        else:
+            encoder, decoder = choose_filterbank(n_basis, kernel_size=kernel_size, stride=stride, enc_basis=enc_basis, dec_basis=dec_basis, **kwargs)
         
         random_mask = kwargs.get('random_mask', None)
         self.local_att = kwargs.get('local_att', None)
@@ -118,14 +126,13 @@ class GALRNet(nn.Module):
         batch_size, C_in, T = input.size()
         
         assert C_in == 1, "input.size() is expected (?, 1, ?), but given {}".format(input.size())
-        
+        ## TODO: 改這邊的 kernel size 讓輸出有對準
         padding = (stride - (T - kernel_size) % stride) % stride
         padding_left = padding // 2
         padding_right = padding - padding_left
-
         input = F.pad(input, (padding_left, padding_right))
         w = self.encoder(input)
-        
+        # print(w.shape)
         if torch.is_complex(w):
             amplitude, phase = torch.abs(w), torch.angle(w)
             mask = self.separator(amplitude)
@@ -140,7 +147,9 @@ class GALRNet(nn.Module):
         w_hat = w_hat.view(batch_size*n_sources, n_basis, -1)
         x_hat = self.decoder(w_hat)
         x_hat = x_hat.view(batch_size, n_sources, -1)
+        output = x_hat
         output = F.pad(x_hat, (-padding_left, -padding_right))
+        # print(input.shape, output.shape, flush=True)
         
         return output, latent
     
@@ -177,9 +186,10 @@ class GALRNet(nn.Module):
     def build_model(cls, model_path):
         config = torch.load(model_path, map_location=lambda storage, loc: storage)
 
-        n_bases = config['n_bases']
+        n_basis = config.get('n_basis') or config['n_bases']
         kernel_size, stride = config['kernel_size'], config['stride']
         enc_basis, dec_basis = config.get('enc_bases') or config['enc_basis'], config.get('dec_bases') or config['dec_basis']
+        print(enc_basis, dec_basis)
         enc_nonlinear = config['enc_nonlinear']
         enc_onesided, enc_return_complex = config.get('enc_onesided') or None, config.get('enc_return_complex') or None
         window_fn = config['window_fn']
@@ -200,7 +210,7 @@ class GALRNet(nn.Module):
         local_att = config.get('local_att', False)
         
         model = cls(
-            n_bases, kernel_size, stride=stride, enc_bases=enc_basis, dec_bases=dec_basis, enc_nonlinear=enc_nonlinear, 
+            n_basis, kernel_size, stride=stride, enc_basis=enc_basis, dec_basis=dec_basis, enc_nonlinear=enc_nonlinear, 
             enc_onesided=enc_onesided, enc_return_complex=enc_return_complex,
             window_fn=window_fn,sep_hidden_channels=sep_hidden_channels, 
             sep_chunk_size=sep_chunk_size, sep_hop_size=sep_hop_size, sep_down_chunk_size=sep_down_chunk_size, sep_num_blocks=sep_num_blocks,
