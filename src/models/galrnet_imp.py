@@ -886,19 +886,9 @@ class Denoiser(nn.Module):
 
         x = x.view(batch_size*n_sources, num_features, n_frames)
 
-        src = src.view(batch_size*n_sources, num_features, n_frames)
-        src = self.posterior(src).unsqueeze(1)
-        src = self.fc(src.transpose(-1,-2)).transpose(-1,-2)
-        src = src.squeeze()
-        
-        src = F.pad(src, (padding_left, padding_right))
-        src = self.segment1d(src) # -> (batch_size, C, S, chunk_size)
-        src = self.norm2d(src)
-
-        x_post = F.pad(x, (padding_left, padding_right))
-        x_post = self.segment1d(x_post) # -> (batch_size, C, S, chunk_size)
-        
         if source is not None:
+            # mean = (source + x) / 2
+            # var = source - mean
             source = source.view(batch_size*n_sources, num_features, n_frames)
 
             source_post = self.posterior(source).unsqueeze(1)
@@ -922,7 +912,18 @@ class Denoiser(nn.Module):
                 x = self.diffusion4(x, x, torch.zeros_like(x))
             x = self.fc(x.transpose(-1,-2)).transpose(-1,-2)
             x = x.squeeze()
+
+        src = src.view(batch_size*n_sources, num_features, n_frames)
+        src = self.posterior(src).unsqueeze(1)
+        src = self.fc(src.transpose(-1,-2)).transpose(-1,-2)
+        src = src.squeeze()
         
+        src = F.pad(src, (padding_left, padding_right))
+        src = self.segment1d(src) # -> (batch_size, C, S, chunk_size)
+        src = self.norm2d(src)
+
+        x_post = F.pad(x, (padding_left, padding_right))
+        x_post = self.segment1d(x_post) # -> (batch_size, C, S, chunk_size)
         x_post = self.norm2d(x_post)
 
         x_post = self.decoder(x_post, src)
