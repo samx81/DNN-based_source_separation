@@ -109,7 +109,7 @@ class GALRNet(nn.Module):
     def forward(self, input):
         output, latent = self.extract_latent(input)
         
-        return output, latent
+        return output, latent, None, None
         
     def extract_latent(self, input):
         """

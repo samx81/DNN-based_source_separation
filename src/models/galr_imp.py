@@ -39,6 +39,29 @@ class GALR(nn.Module):
 
         return output
 
+class GALR_Res(nn.Module):
+    def __init__(self, num_features, hidden_channels, random_mask=False, num_blocks=6, num_heads=8, norm=True, dropout=0.1, low_dimension=True, causal=False, eps=EPS, **kwargs):
+        super().__init__()
+        
+        # Network confguration
+        net = []
+        net.append(GALRBlock_Res(num_features, hidden_channels, name=0, num_heads=num_heads, norm=norm, dropout=dropout, low_dimension=low_dimension, causal=causal, eps=eps, **kwargs))
+        for i in range(num_blocks-1):
+            net.append(GALRBlock_Res(num_features, hidden_channels, name=i+1,num_heads=num_heads, norm=norm, dropout=dropout, low_dimension=low_dimension, causal=causal, eps=eps, **kwargs))
+            
+        self.net = nn.Sequential(*net)
+
+    def forward(self, input):
+        """
+        Args:
+            input (batch_size, num_features, S, chunk_size)
+        Returns:
+            output (batch_size, num_features, S, chunk_size)
+        """
+        output = self.net(input)
+
+        return output
+
 class GALRBlock_Mask(nn.Module):
     def __init__(self, num_features, hidden_channels, name=None, num_heads=8, causal=False, norm=True, dropout=0.1, low_dimension=True, eps=EPS, **kwargs):
         super().__init__()
@@ -79,7 +102,7 @@ class GALRBlock(nn.Module):
     def __init__(self, num_features, hidden_channels, name=None, random_mask=False, num_heads=8, causal=False, norm=True, dropout=0.1, low_dimension=True, eps=EPS, **kwargs):
         super().__init__()
         
-        self.intra_chunk_block = LocallyRecurrentBlock(num_features, hidden_channels=hidden_channels, norm=norm, eps=eps)
+        self.intra_chunk_block = LocallyGRURecurrentBlock(num_features, hidden_channels=hidden_channels, norm=norm, eps=eps)
 
         if kwargs.get('local_att', None):
             self.intra_chunk_att = LocallyAttentiveBlock(num_features, num_heads=num_heads, causal=causal, norm=norm, dropout=dropout, eps=eps)
@@ -101,14 +124,108 @@ class GALRBlock(nn.Module):
             output (batch_size, num_features, S, chunk_size)
         """
 
-        x = self.intra_chunk_block(input)
+        intra = self.intra_chunk_block(input)
         
         if self.intra_chunk_att:
-            x = self.intra_chunk_att(x)
+            intra = self.intra_chunk_att(intra)
 
-        output = self.inter_chunk_block(x)
+        output = self.inter_chunk_block(intra)
+        output += intra
 
         return output
+
+class GALRBlock_Res(nn.Module):
+    def __init__(self, num_features, hidden_channels, name=None, random_mask=False, num_heads=8, causal=False, norm=True, dropout=0.1, low_dimension=True, eps=EPS, **kwargs):
+        super().__init__()
+
+        print(num_features, hidden_channels)
+        
+        self.intra_chunk_block = LocallyGRURecurrentBlock(num_features, hidden_channels=hidden_channels, norm=norm, eps=eps)
+
+        if kwargs.get('local_att', None):
+            self.intra_chunk_att = LocallyAttentiveBlock(num_features, num_heads=num_heads, causal=causal, norm=norm, dropout=dropout, eps=eps)
+        else:
+            self.intra_chunk_att = None
+
+        if low_dimension:
+            chunk_size = kwargs['chunk_size']
+            down_chunk_size = kwargs['down_chunk_size']
+            self.inter_chunk_block = LowDimensionGloballyAttentiveBlock(num_features, name=name, masking=random_mask, chunk_size=chunk_size, down_chunk_size=down_chunk_size, num_heads=num_heads, causal=causal, norm=norm, dropout=dropout, eps=eps)
+        else:
+            self.inter_chunk_block = GloballyAttentiveBlock(num_features,name=name, masking=random_mask, num_heads=num_heads, causal=causal, norm=norm, dropout=dropout, eps=eps)
+
+        self.norm = nn.GroupNorm(1, num_features)
+        
+    def forward(self, input):
+        """
+        Args:
+            input (batch_size, num_features, S, chunk_size)
+        Returns:
+            output (batch_size, num_features, S, chunk_size)
+        """
+
+        intra = self.intra_chunk_block(input)
+        
+        if self.intra_chunk_att:
+            intra = self.intra_chunk_att(intra)
+        
+        output = self.inter_chunk_block(intra)
+        output += intra
+        output = self.norm(output)
+        output += input
+
+        return output
+
+class GALRBlock_Res2(nn.Module):
+    def __init__(self, num_features, hidden_channels, name=None, random_mask=False, num_heads=8, causal=False, norm=True, dropout=0.1, low_dimension=True, eps=EPS, **kwargs):
+        super().__init__()
+
+        print(num_features, hidden_channels)
+        
+        self.intra_chunk_block = LocallyGRURecurrentBlock(num_features, hidden_channels=hidden_channels, norm=norm, eps=eps)
+
+        if kwargs.get('local_att', None):
+            self.intra_chunk_att = LocallyAttentiveBlock(num_features, num_heads=num_heads, causal=causal, norm=norm, dropout=dropout, eps=eps)
+        else:
+            self.intra_chunk_att = None
+
+        if low_dimension:
+            chunk_size = kwargs['chunk_size']
+            down_chunk_size = kwargs['down_chunk_size']
+            self.inter_chunk_block = LowDimensionGloballyAttentiveBlock(num_features, name=name, masking=random_mask, chunk_size=chunk_size, down_chunk_size=down_chunk_size, num_heads=num_heads, causal=causal, norm=norm, dropout=dropout, eps=eps)
+        else:
+            self.inter_chunk_block = GloballyAttentiveBlock(num_features,name=name, masking=random_mask, num_heads=num_heads, causal=causal, norm=norm, dropout=dropout, eps=eps)
+
+        self.norm1 = nn.GroupNorm(1, num_features)
+        self.norm2 = nn.GroupNorm(1, num_features)
+        
+    def forward(self, input):
+        """
+        Args:
+            input (batch_size, num_features, S, chunk_size)
+        Returns:
+            output (batch_size, num_features, S, chunk_size)
+        """
+
+        intra = self.intra_chunk_block(input)
+        
+        if self.intra_chunk_att:
+            intra = self.intra_chunk_att(intra)
+
+        intra = self.norm1(intra)
+        intra += input
+        
+        output = self.inter_chunk_block(intra)
+        output = self.norm2(output)
+        output += intra
+
+        return output
+
+class LocallyGRURecurrentBlock(LocallyRecurrentBlock):
+    def __init__(self, num_features, hidden_channels, norm=True, eps=EPS):
+        # print(norm)
+        super().__init__(num_features, hidden_channels, norm=norm, eps=eps)
+        self.rnn = nn.GRU(num_features, hidden_channels, batch_first=True, bidirectional=True)
 
 class GloballyAttentiveBlockBase(nn.Module):
     def __init__(self):
@@ -131,6 +248,75 @@ class GloballyAttentiveBlockBase(nn.Module):
         indices = position / base**index
         output = torch.cat([torch.sin(indices), torch.cos(indices)], dim=1)
         
+        return output
+
+class GloballyFastAttentiveBlock(GloballyAttentiveBlockBase):
+    def __init__(self, num_features, name=None, masking=False, num_heads=8, causal=False, norm=True, dropout=0.1, eps=EPS):
+        super().__init__()
+
+        self.norm = norm
+        self.masking = masking
+        self.name = name 
+
+        if self.norm:
+            self.norm2d_in = LayerNormAlongChannel(num_features, eps=eps)
+
+        self.multihead_attn = FastAttention(dim_heads = num_heads, nb_features = num_features)
+
+        if dropout is not None:
+            self.dropout = True
+            self.dropout1d = nn.Dropout(p=dropout)
+        else:
+            self.dropout = False
+        
+        if self.norm:
+            norm_name = 'cLN' if causal else 'gLN'
+            self.norm2d_out = choose_layer_norm(norm_name, num_features, causal=causal, eps=eps)
+        
+    def forward(self, input):
+        """
+        Args:
+            input (batch_size, num_features, S, K): K is chunk size
+        Returns:
+            output (batch_size, num_features, S, K)
+        """
+        batch_size, num_features, S, K = input.size()
+
+        if self.masking:
+            rand_num = torch.randint(S, (torch.randint(int(S*0.3),(1,)),)).cuda()
+            x = input.clone()
+            x = x.index_fill_(2, rand_num, 0)
+        else:
+            x = input
+
+        if self.norm:
+            x = self.norm2d_in(x) # -> (batch_size, num_features, S, K)
+        else:
+            x = x
+
+        encoding = self.positional_encoding(length=S*K, dimension=num_features).permute(1,0).view(num_features, S, K).to(x.device)
+        x = x + encoding # -> (batch_size, num_features, S, K)
+
+        x = x.permute(2,0,3,1).contiguous() # -> (S, batch_size, K, num_features)
+        x = x.view(S, batch_size*K, num_features) # -> (S, batch_size*K, num_features)
+
+        residual = x # (S, batch_size*K, num_features)
+
+        x, _ = self.multihead_attn(x, x, x) # (T_tgt, batch_size, num_features), (batch_size, T_tgt, T_src), where T_tgt = T_src = T
+
+        if self.dropout:
+            x = self.dropout1d(x)
+        x = x + residual # -> (S, batch_size*K, num_features)
+        x = x.view(S, batch_size, K, num_features)
+        x = x.permute(1,3,0,2).contiguous() # -> (batch_size, num_features, S, K)
+
+        if self.norm:
+            x = self.norm2d_out(x) # -> (batch_size, num_features, S, K)
+        x = x + input
+
+        # torch.save([input, x_masked, x_after_normed, x_with_encoding, x_after_att, x_addback], 'x_global.pt')
+        output = x.view(batch_size, num_features, S, K)
+
         return output
 
 class GloballyAttentiveBlock(GloballyAttentiveBlockBase):
@@ -172,19 +358,19 @@ class GloballyAttentiveBlock(GloballyAttentiveBlockBase):
         else:
             x = input
         
-        x_masked = x.clone()
+        # x_masked = x.clone()
 
         if self.norm:
             x = self.norm2d_in(x) # -> (batch_size, num_features, S, K)
         else:
             x = x
         
-        x_after_normed = x.clone()
+        # x_after_normed = x.clone()
 
         encoding = self.positional_encoding(length=S*K, dimension=num_features).permute(1,0).view(num_features, S, K).to(x.device)
         x = x + encoding # -> (batch_size, num_features, S, K)
 
-        x_with_encoding = x.clone()
+        # x_with_encoding = x.clone()
 
         x = x.permute(2,0,3,1).contiguous() # -> (S, batch_size, K, num_features)
         x = x.view(S, batch_size*K, num_features) # -> (S, batch_size*K, num_features)
@@ -199,13 +385,13 @@ class GloballyAttentiveBlock(GloballyAttentiveBlockBase):
         x = x.view(S, batch_size, K, num_features)
         x = x.permute(1,3,0,2).contiguous() # -> (batch_size, num_features, S, K)
 
-        x_after_att = x.clone()
+        # x_after_att = x.clone()
 
         if self.norm:
             x = self.norm2d_out(x) # -> (batch_size, num_features, S, K)
         x = x + input
 
-        x_addback = x.clone()
+        # x_addback = x.clone()
         # torch.save([input, x_masked, x_after_normed, x_with_encoding, x_after_att, x_addback], 'x_global.pt')
         output = x.view(batch_size, num_features, S, K)
 

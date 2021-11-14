@@ -39,9 +39,39 @@ class PerceptualLoss(nn.Module):
         else:
             # EMD
             return torch.abs(y_hat - y).mean()
+class PerceptualLoss_Hubert(nn.Module):
+    pass
+# class PerceptualLoss_Hubert(nn.Module):
+#     def __init__(self,
+#         loss_type='lp',    # wsd or lp
+#         device=None,
+#     ):
+#         super().__init__()
+#         from s3prl.hub import distilhubert
+#         self.loss_type = loss_type
+
+#         self.model = distilhubert()
+
+#         self.model = nn.DataParallel(self.model)
+#         self.model.to(device)
+#         self.model.eval()
+
+#     def forward(self, y_hat, y):
+#         # print(y_hat.shape, y.shape)
+#         # y_hat, y = map(self.model, [y_hat, y])
+#         y_hat, y = self.model(y_hat), self.model(y)
+#         y_hat, y = y_hat['last_hidden_state'], y['last_hidden_state']
+#         if self.loss_type == 'wsd':
+#             # WSD
+#             return torch.mean(y) - torch.mean(y_hat)
+#             #return torch.mean(y * y_hat)
+#         else:
+#             # EMD
+#             return torch.abs(y_hat - y).mean()
 
 if __name__ == "__main__":
     #per_loss = PerceptualLoss(PRETRAINED_MODEL_PATH="/share/nas167/fuann/pretrain/wav2vec_large.pt")
+    per_loss = PerceptualLoss_Hubert()
     wav1 = torch.rand((2, 16000))
     wav2 = torch.rand((2, 16000))
     loss = per_loss(wav1, wav2)

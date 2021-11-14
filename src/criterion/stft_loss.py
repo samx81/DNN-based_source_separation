@@ -14,7 +14,7 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 from models.complex import STFT
-from criterion.pfp_loss import PerceptualLoss
+from criterion.pfp_loss import PerceptualLoss, PerceptualLoss_Hubert
 
 def stft(x, fft_size, hop_size, win_length, window):
     """Perform STFT and convert to magnitude spectrogram.
@@ -208,10 +208,12 @@ class FSNetLoss(torch.nn.Module):
 
     def __init__(self, alpha=0.4, fft_size=512, shift_size=100, win_length=500, window="hanning"):
         """Initialize STFT loss module."""
+        super(FSNetLoss, self).__init__()
 
         self.time_loss = nn.MSELoss()
-
-        self.complex_stft = STFT(fft_size, win_length, shift_size, window)
+        self.fft_size, self.win_length, self.shift_size, self.window = fft_size, win_length, shift_size, window
+        # self.complex_stft = STFT(fft_size, win_length, shift_size, window)
+        self.window = torch.hann_window(self.fft_size).cuda() # should be win_length?
         self.spectral_loss = nn.L1Loss()
         
         self.alpha = alpha
@@ -227,25 +229,34 @@ class FSNetLoss(torch.nn.Module):
         """
         loss = self.alpha * self.time_loss(y,x) # torch.loss -> clean, estimate
 
-        est_real, est_imag = torch.chunk(self.complex_stft(x), 2, 1)
-        clean_real, clean_imag = torch.chunk(self.complex_stft(y), 2, 1)
+        est_real, est_imag = torch.chunk(torch.stft(x, self.fft_size, 
+                                            hop_length=self.shift_size, window=self.window),
+                                        2, 2)
+        clean_real, clean_imag = torch.chunk(torch.stft(y, self.fft_size, 
+                                            hop_length=self.shift_size, window=self.window),
+                                        2, 2)
 
-        spectral_loss = self.spectral_loss((clean_real- est_real) + (clean_imag + est_imag))
+        spectral_loss = self.spectral_loss(clean_real, est_real) + self.spectral_loss(clean_imag, est_imag)
 
         loss += (1 - self.alpha) * spectral_loss
+
         return loss
 
 class CombinePFPLoss(torch.nn.Module):
     """DEMUCS loss module."""
 
-    def __init__(self, loss, weight=2000):
+    def __init__(self, loss, weight=2000, pfp_type='wav2vec'):
         """Initialize STFT loss module."""
         super(CombinePFPLoss, self).__init__()
         self.loss = loss
         self.weight = weight
-        self.pfp_loss = PerceptualLoss(model_type='wav2vec',loss_type="lp",
-            PRETRAINED_MODEL_PATH='pretrain/wav2vec_large.pt').cuda()
-
+        if pfp_type == 'wav2vec':
+            self.pfp_loss = PerceptualLoss(model_type='wav2vec',loss_type="lp",
+                PRETRAINED_MODEL_PATH='pretrain/wav2vec_large.pt').cuda()
+        elif pfp_type == 'Hubert':
+            self.pfp_loss = PerceptualLoss_Hubert()
+        else:
+            print('PFP Not implemented.')
 
     def forward(self, x, y):
         """Calculate forward propagation.
@@ -258,5 +269,6 @@ class CombinePFPLoss(torch.nn.Module):
         """
         loss = self.loss(x, y)
         loss += self.weight * self.pfp_loss(x,y)
+
 
         return loss
