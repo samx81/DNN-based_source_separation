@@ -502,21 +502,19 @@ class GALRNet_Denoise(GALRNet):
                 source = F.pad(source, (padding_left, padding_right))
                 o = self.encoder(source)
                 o = o.unsqueeze(dim=1)
-            
-                # produce sample
-                
-                mix = w + EPS
-                oracle_mask = o / mix
 
-            # ratio_loss
-            # 在這邊用 FFN 映射特徵到某空間, 可能 stack 起來再拆開
-            var = oracle_mask + (mask - oracle_mask) * 0.7
-            # var = mask
-            # var = torch.mean(mask, oracle_mask)
+            mix = w + EPS
+            oracle_mask = o / mix
+
+            mean = (0.3 * oracle_mask + 0.7 * mask) / 2
+            var = 0.3* oracle_mask - mean
+            # var = oracle_mask + (mask - oracle_mask) * 0.7
+
             keep_mask = torch.abs(oracle_mask - mask).le(0.01).float()
+
             # print(torch.sum(keep_mask), torch.mean(torch.abs(oracle_mask - mask)), flush=True)
 
-            noise_mask = self.mask_nonlinear_fn(self.diffusion4(mask, oracle_mask, torch.abs(var), keep_mask))
+            noise_mask = self.mask_nonlinear_fn(self.diffusion4(mask, mean, torch.abs(var), keep_mask))
         else:
             noise_mask = mask
 
@@ -590,6 +588,146 @@ class GALRNet_Denoise(GALRNet):
 
         return output, latent, output_denoise, latent_denoise
 
+class GALRNet_Denoise2(GALRNet):
+    def __init__(
+        self,*args, **kwargs
+    ):
+        super().__init__(*args,**kwargs)
+        n_basis = args[0]
+        sep_hidden_channels = kwargs['sep_hidden_channels']
+        sep_chunk_size = kwargs['sep_chunk_size']
+        sep_hop_size = kwargs['sep_hop_size']
+        sep_down_chunk_size = kwargs['sep_down_chunk_size']
+        sep_num_blocks = kwargs['sep_num_blocks']
+        sep_num_heads = kwargs['sep_num_heads']
+        sep_norm = kwargs['sep_norm']
+        sep_dropout = kwargs['sep_dropout']
+        mask_nonlinear = kwargs['mask_nonlinear']
+        low_dimension = kwargs['low_dimension']
+        causal = kwargs['causal']
+        n_sources = kwargs['n_sources']
+        eps = kwargs.get('eps', EPS)
+
+        self.separator = Separator_Denoise(
+                n_basis, hidden_channels=sep_hidden_channels,
+                chunk_size=sep_chunk_size, hop_size=sep_hop_size, down_chunk_size=sep_down_chunk_size, num_blocks=sep_num_blocks,
+                num_heads=sep_num_heads, norm=sep_norm, dropout=sep_dropout, mask_nonlinear=mask_nonlinear,
+                low_dimension=low_dimension,
+                causal=causal,
+                n_sources=n_sources,
+                eps=eps
+            )
+        self.denoiser = Denoiser(
+                n_basis, hidden_channels=sep_hidden_channels,
+                chunk_size=sep_chunk_size, hop_size=sep_hop_size, down_chunk_size=sep_down_chunk_size, 
+                num_blocks=4, num_heads=sep_num_heads // 2, 
+                norm=sep_norm, dropout=sep_dropout, mask_nonlinear=mask_nonlinear,
+                low_dimension=low_dimension,
+                causal=causal, n_sources=n_sources,
+                eps=eps
+            )
+
+        self.mask_loss = Mask_Loss()
+
+    def forward(self, input, source=None):
+        output, latent, output_denoise, latent_denoise = self.extract_latent(input, source)
+        
+        return output, latent, output_denoise, latent_denoise
+        
+    def extract_latent(self, input, source=None):
+        """
+        Args:
+            input (batch_size, 1, T)
+        Returns:
+            output (batch_size, n_sources, T)
+            latent (batch_size, n_sources, n_basis, T'), where T' = (T-K)//S+1
+        """
+        n_sources = self.n_sources
+        n_basis = self.n_basis
+        kernel_size, stride = self.kernel_size, self.stride
+        
+        batch_size, C_in, T = input.size()
+        
+        assert C_in == 1, "input.size() is expected (?, 1, ?), but given {}".format(input.size())
+
+        padding = (stride - (T - kernel_size) % stride) % stride
+        padding_left = padding // 2
+        padding_right = padding - padding_left
+        input = F.pad(input, (padding_left, padding_right))
+        w = self.encoder(input)
+
+        if torch.is_complex(w):
+            amplitude, phase = torch.abs(w), torch.angle(w)
+            mask = self.separator(amplitude)
+            amplitude, phase = amplitude.unsqueeze(dim=1), phase.unsqueeze(dim=1)
+            w_hat = amplitude * mask * torch.exp(1j * phase)
+        else:
+            mask = self.separator(w)
+
+            w = w.unsqueeze(dim=1)
+            w_hat = w * mask # (batchsize, n_source, feature, time)
+
+        if source is not None:
+            with torch.no_grad():
+                source = source.unsqueeze(dim=1)
+                source = F.pad(source, (padding_left, padding_right))
+                o = self.encoder(source)
+                o = o.unsqueeze(dim=1)
+                mix = w + EPS
+                oracle_mask = o / mix
+                oracle_mask = F.relu(oracle_mask)
+            
+            denoise_x, post = self.denoiser(w_hat, w_hat, o)
+        else:
+            denoise_x, post = self.denoiser(w_hat, w_hat)
+            # (bs, n_source, feat, time)
+
+        # TODO: Remove this debug 
+        if source is not None:
+            latent_denoise = self.mask_loss(post.unsqueeze(dim=1), w_hat)
+            # latent_denoise = self.mask_loss(oracle_mask, denoise_x) * 0.7
+            # latent_denoise += self.mask_loss(oracle_mask, mask) * 0.3
+            # latent_denoise = torch.clamp(latent_denoise, 0, 10)
+            # latent_denoise = None
+            # latent_denoise = output_denoise
+        else:
+            output_denoise, latent_denoise = None, None
+
+        w_hat_denoise = w * denoise_x
+
+        w_hat_denoise = w_hat_denoise.view(batch_size*n_sources, n_basis, -1)
+        x_hat_denoise = self.decoder(w_hat_denoise)
+        x_hat_denoise = x_hat_denoise.view(batch_size, n_sources, -1)
+
+        output_denoise = F.pad(x_hat_denoise, (-padding_left, -padding_right))
+        output_denoise = [output_denoise]
+
+        latent = w_hat
+        x_hat = w_hat.view(batch_size*n_sources, n_basis, -1)
+        x_hat = self.decoder(x_hat)
+        x_hat = x_hat.view(batch_size, n_sources, -1)
+        # output = x_hat
+        output = F.pad(x_hat, (-padding_left, -padding_right))
+
+        with torch.no_grad():
+            no_diffusion, post = self.denoiser(w_hat, w_hat) # -> 傳入 encoder x?
+            latent = w * no_diffusion
+
+            latent = latent.view(batch_size*n_sources, n_basis, -1)
+            latent = self.decoder(latent)
+            latent = latent.view(batch_size, n_sources, -1)
+            latent = F.pad(latent, (-padding_left, -padding_right))
+
+            raw_diff, post = self.denoiser(w_hat, w_hat, diff=True)
+            raw_diff = raw_diff.view(batch_size*n_sources, n_basis, -1)
+            raw_diff = self.decoder(raw_diff)
+            raw_diff = raw_diff.view(batch_size, n_sources, -1)
+            raw_diff = F.pad(raw_diff, (-padding_left, -padding_right))
+            output_denoise.insert(0, raw_diff)
+
+
+        return output, latent, output_denoise, latent_denoise
+
 
 class GALRNet_Res_NoDeno(GALRNet):
     def __init__(
@@ -620,6 +758,184 @@ class GALRNet_Res_NoDeno(GALRNet):
                 n_sources=n_sources,
                 eps=eps
             )
+
+class PosteriorConverter(nn.Module):
+    def __init__(self, in_feat, out_feat, causal=True, dropout=0.1, mask_nonlinear='softmax', eps=EPS):
+        super().__init__()
+
+        self.conv1 = nn.Conv1d(in_feat, out_feat, 1)
+        self.conv2 = nn.Conv1d(out_feat, out_feat, 1)
+        norm_name = 'cLN' if causal else 'gLN'
+        self.norm = choose_layer_norm(norm_name, out_feat, causal=causal, eps=eps)
+        self.fc = nn.Linear(out_feat, out_feat)
+
+        if dropout is not None:
+            self.dropout = True
+            self.dropout1d = nn.Dropout(p=dropout)
+        else:
+            self.dropout = False
+
+        if mask_nonlinear == 'relu':
+            self.mask_nonlinear = nn.ReLU()
+        elif mask_nonlinear == 'sigmoid':
+            self.mask_nonlinear = nn.Sigmoid()
+        elif mask_nonlinear == 'softmax':
+            self.mask_nonlinear = nn.Softmax(dim=1)
+        elif mask_nonlinear == 'tanh':
+            self.mask_nonlinear = nn.Tanh()
+        else:
+            raise ValueError("Cannot support {}".format(mask_nonlinear))
+    
+    def forward(self, input):
+        
+        x = self.conv1(input)
+        x = self.conv2(x)
+
+        if self.dropout:
+            x = self.dropout1d(x)
+            
+        x = self.norm(x)
+        x = self.fc(x.transpose(-1,-2)).transpose(-1,-2)
+
+        x = self.mask_nonlinear(x)
+
+        return x
+
+
+class Denoiser(nn.Module):
+    def __init__(
+        self,
+        num_features, hidden_channels=128,
+        chunk_size=100, hop_size=50, down_chunk_size=None, num_blocks=6, num_heads=4,
+        norm=True, dropout=0.1, mask_nonlinear='relu',
+        low_dimension=True,
+        causal=True,
+        n_sources=2,
+        eps=EPS,
+        random_mask=False,
+        local_att=False
+    ):
+        super().__init__()
+        
+        self.num_features, self.n_sources = num_features, n_sources
+        self.chunk_size, self.hop_size = chunk_size, hop_size
+        
+        self.segment1d = Segment1d(chunk_size, hop_size)
+        norm_name = 'cLN' if causal else 'gLN'
+        self.norm2d = choose_layer_norm(norm_name, num_features, causal=causal, eps=eps)
+
+        self.decoder = GALRDecoder(
+                num_features, hidden_channels,
+                chunk_size=chunk_size, down_chunk_size=down_chunk_size,
+                num_blocks=num_blocks, num_heads=num_heads,
+                norm=norm, dropout=dropout,
+                low_dimension=low_dimension,
+                causal=causal,
+                eps=eps,
+            )
+
+        self.betas = np.linspace(0.08, 0.2, 50)
+        self.alphas = 1.0 - self.betas
+        self.alphas_bar = torch.tensor(np.concatenate(([1], np.cumprod(self.alphas))), dtype=torch.float32)
+
+        self.posterior = PosteriorConverter(num_features, num_features * 4, causal=causal, eps=eps)
+        self.fc = nn.Linear(num_features * 4, num_features)
+
+        self.overlap_add1d = OverlapAdd1d(chunk_size, hop_size)
+        self.prelu = nn.PReLU()
+        self.gtu = GTU1d(num_features, num_features, kernel_size=1, stride=1)
+        
+        if mask_nonlinear == 'relu':
+            self.mask_nonlinear = nn.ReLU()
+        elif mask_nonlinear == 'sigmoid':
+            self.mask_nonlinear = nn.Sigmoid()
+        elif mask_nonlinear == 'softmax':
+            self.mask_nonlinear = nn.Softmax(dim=1)
+        elif mask_nonlinear == 'tanh':
+            self.mask_nonlinear = nn.Tanh()
+        else:
+            raise ValueError("Cannot support {}".format(mask_nonlinear))
+            
+    def diffusion4(self, x, var, mask, noise_level=None):
+        batch_size = x.shape[0]
+        #Uniform index
+        idx = torch.randint(0, len(self.betas), size=(batch_size,))
+        lb = self.alphas_bar[idx + 1]
+        ub = self.alphas_bar[idx]
+        if not noise_level:
+            noise_level = torch.rand(size=(batch_size,)) * (ub - lb) + lb
+            noise_level = noise_level.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).to(device=x.device)
+        noisy_x = torch.sqrt(noise_level) * x + torch.sqrt(1.0 - noise_level) * torch.randn_like(x) * var
+        # return noisy_x
+        return x * mask + noisy_x * (1 - mask)
+
+    def forward(self, x, src, source=None, diff=False):
+        """
+        Args:
+            input (batch_size, num_features, n_frames)
+        Returns:
+            output (batch_size, n_sources, num_features, n_frames)
+        """
+        num_features, n_sources = self.num_features, self.n_sources
+        chunk_size, hop_size = self.chunk_size, self.hop_size
+        batch_size, n_sources, num_features, n_frames = x.size()
+        
+        padding = (hop_size-(n_frames-chunk_size)%hop_size)%hop_size
+        padding_left = padding//2
+        padding_right = padding - padding_left
+
+        x = x.view(batch_size*n_sources, num_features, n_frames)
+
+        src = src.view(batch_size*n_sources, num_features, n_frames)
+        src = self.posterior(src).unsqueeze(1)
+        src = self.fc(src.transpose(-1,-2)).transpose(-1,-2)
+        src = src.squeeze()
+        
+        src = F.pad(src, (padding_left, padding_right))
+        src = self.segment1d(src) # -> (batch_size, C, S, chunk_size)
+        src = self.norm2d(src)
+
+        x_post = F.pad(x, (padding_left, padding_right))
+        x_post = self.segment1d(x_post) # -> (batch_size, C, S, chunk_size)
+        
+        if source is not None:
+            source = source.view(batch_size*n_sources, num_features, n_frames)
+
+            source_post = self.posterior(source).unsqueeze(1)
+            x           = self.posterior(x).unsqueeze(1)
+
+            keep_mask = torch.abs(source_post - x).le(0.01).float()
+
+            var = torch.max(source_post * 0.1, x)
+            
+ 
+            noisy_x = self.diffusion4(x, var, keep_mask)
+
+            # x = self.fc(x.transpose(-1,-2)).transpose(-1,-2)
+            noisy_x = self.fc(noisy_x.transpose(-1,-2)).transpose(-1,-2)
+            
+            # x = x * keep_mask + noisy_x * (1 - keep_mask)
+            x = noisy_x.squeeze()
+        else:
+            x = self.posterior(x).unsqueeze(1)
+            if diff:
+                x = self.diffusion4(x, x, torch.zeros_like(x))
+            x = self.fc(x.transpose(-1,-2)).transpose(-1,-2)
+            x = x.squeeze()
+        
+        x_post = self.norm2d(x_post)
+
+        x_post = self.decoder(x_post, src)
+        x_post = self.overlap_add1d(x_post)
+        x_post = F.pad(x_post, (-padding_left, -padding_right))
+
+        x_post = self.prelu(x_post) # -> (batch_size, C, n_frames)
+        x_post = x_post.view(batch_size*n_sources, num_features, n_frames) # -> (batch_size*n_sources, num_features, n_frames)
+        x_post = self.gtu(x_post) # -> (batch_size*n_sources, num_features, n_frames)
+        x_post = self.mask_nonlinear(x_post) # -> (batch_size*n_sources, num_features, n_frames)
+        output = x_post.view(batch_size, n_sources, num_features, n_frames)
+        
+        return output, x
 
 class Separator(nn.Module):
     def __init__(
