@@ -11,7 +11,7 @@ import torchaudio
 import torch.nn as nn
 from pystoi import stoi as pystoi
 from tqdm import tqdm
-
+from pesq import pesq as pypesq
 from utils.utils import draw_loss_curve
 from criterion.pit import pit
 
@@ -154,8 +154,14 @@ class TrainerBase:
             train_loss, valid_loss = self.run_one_epoch(epoch)
             end = time.time()
             
-            print("[Epoch {}/{}] loss (train): {:.5f}, loss (valid): {:.5f}, {:.3f} [sec], best_loss:{:.5f}".format(
-                epoch+1, self.epochs, train_loss, valid_loss, end - start, self.best_loss), flush=True)
+            if type(valid_loss) is tuple:
+                valid_loss, valid_loss_noise = valid_loss
+                print("[Epoch {}/{}] loss (train): {:.5f}, loss (valid): {:.5f}, (noise) {:.5f}, {:.3f} [sec], best_loss:{:.5f}".format(
+                    epoch+1, self.epochs, train_loss, valid_loss, valid_loss_noise, end - start, self.best_loss), flush=True)
+            else:
+                print("[Epoch {}/{}] loss (train): {:.5f}, loss (valid): {:.5f}, {:.3f} [sec], best_loss:{:.5f}".format(
+                    epoch+1, self.epochs, train_loss, valid_loss, end - start, self.best_loss), flush=True)
+            
             
             self.train_loss[epoch] = train_loss
             self.valid_loss[epoch] = valid_loss
@@ -211,24 +217,60 @@ class TrainerBase:
             if self.use_cuda:
                 mixture = mixture.cuda()
                 sources = sources.cuda()
-            
-            estimated_sources, _ = self.model(mixture)
+
+            # estimated_sources, _, estimated_sources_denoise, _ = self.model(mixture)
+            estimated_sources, raw_denoise, estimated_sources_denoise, maskloss = self.model(mixture, sources[:,0])
             # loss = self.pit_criterion(estimated_sources[:,0], sources)
             # print(estimated_sources.shape, sources.shape)
+
             loss = self.criterion(estimated_sources[:,0], sources[:,0])
+            # print(loss, flush=True)
+            if estimated_sources_denoise is not None:
+                loss_noise = loss.detach().item()
+                with torch.no_grad():
+                    raw_den_loss = self.criterion(raw_denoise[:,0], sources[:,0])
+                ###
+                loss_denoise_lst = []
+                alpha = 0.3
+                loss *= alpha
+                
+                loss_frac = (1-alpha) / (len(estimated_sources_denoise)+2)
+                ###
+                # loss_denoise_lst = [estimated_sources_denoise]
+                # loss += estimated_sources_denoise
+
+                for i, v in enumerate(estimated_sources_denoise):
+                    loss_denoise = self.criterion(v[:,0], sources[:,0])
+                    loss_denoise_lst.append(loss_denoise)
+                    if i == len(estimated_sources_denoise)-1:
+                        loss += 3 * loss_frac * loss_denoise
+                    # else:
+                    #     loss += loss_frac * loss_denoise
+                if maskloss is not None:
+                    loss += maskloss
+
+
             if self.noise_loss:
                 loss += self.criterion(estimated_sources[:,1], sources[:,1])
             
             self.optimizer.zero_grad()
             loss.backward()
-            
+        
             if self.max_norm:
                 nn.utils.clip_grad_norm_(self.model.parameters(), self.max_norm)
             
             self.optimizer.step()
             
             train_loss += loss.item()
-            t.set_postfix_str(f'loss: {loss.item():.5f}')
+            if estimated_sources_denoise is not None:
+                postfix = f'raw: {raw_den_loss.item():.4f} '
+                for i, v in enumerate(loss_denoise_lst):
+                    postfix += f'{i}: {v.item():.4f} '
+                if maskloss is not None:
+                    postfix += f'mask: {maskloss:.4f} '
+                t.set_postfix_str(f'encoder: {loss_noise:.4f} {postfix}loss: {loss.item():.4f}')
+            else:
+                t.set_postfix_str(f'loss: {loss.item():.5f}')
             
             if (idx + 1) % 500 == 0:
                 t.write("[Epoch {}/{}] iter {}/{} loss: {:.5f}".format(epoch+1, self.epochs, idx+1, n_train_batch, loss.item()))
@@ -244,6 +286,8 @@ class TrainerBase:
         self.model.eval()
         
         valid_loss = 0
+
+        valid_loss_denoise = []
         n_valid = len(self.valid_loader.dataset)
         
         with torch.no_grad():
@@ -253,12 +297,22 @@ class TrainerBase:
                 if self.use_cuda:
                     mixture = mixture.cuda()
                     sources = sources.cuda()
-                output, _ = self.model(mixture)
+                output, _, output_denoise, maskloss = self.model(mixture)
                 # loss, _ = self.pit_criterion(output[:,0], sources, batch_mean=False)
                 
                 #  loss = self.criterion(output[:,0], torch.squeeze(sources,0))
-                print(output[:,0].shape, sources[:,0].shape)
                 loss = self.criterion(output[:,0], sources[:,0])
+
+                if output_denoise is not None:
+                    # loss += output_denoise
+
+                    for i, v in enumerate(output_denoise):
+                        loss_denoise = self.criterion(v[:,0], sources[:,0])
+                        if len(valid_loss_denoise) > i:
+                            valid_loss_denoise[i] += loss_denoise.item()
+                        else:
+                            valid_loss_denoise.append(loss_denoise.item())
+
                 # loss = loss.sum(dim=0)
                 valid_loss += loss.item()
                 
@@ -283,6 +337,11 @@ class TrainerBase:
         
         valid_loss /= n_valid
         
+        if len(valid_loss_denoise) != 0:
+
+            valid_loss_denoise = [(v / n_valid) for v in valid_loss_denoise]
+            return (valid_loss, valid_loss_denoise)
+
         return valid_loss
     
     def save_model(self, epoch, model_path='./tmp.pth'):
@@ -366,7 +425,11 @@ class TesterBase:
                 loss_mixture = self.pit_criterion(mixture, sources, batch_mean=False)
                 loss_mixture = loss_mixture.sum(dim=0)
                 
-                output, _ = self.model(mixture)
+                output, _, output_denoise, _ = self.model(mixture)
+
+                #if output_denoise is not None:
+                #    output = output_denoise[-1] # 1102: We want best output
+                
                 output = output[:,0] # -> only need 1st output
                 
                 loss = self.pit_criterion(output, sources.squeeze(dim=1), batch_mean=False)
@@ -425,32 +488,34 @@ class TesterBase:
                 
                 pesq = 0
                 if self.metric:
-                    # Target
-                    norm = torch.abs(source).max()
-                    source /= norm
-                    if self.out_dir is not None:
-                        source_path = os.path.join(self.out_dir, "{}-target.wav".format(mixture_ID))
-                    else:
-                        source_path = "tmp-target_{}.wav".format(random_ID)
-                    signal = source.unsqueeze(dim=0) if source.dim() == 1 else source
-                    torchaudio.save(source_path, signal, sample_rate=self.sr, bits_per_sample=BITS_PER_SAMPLE_WSJ0)
                     
-                    command = "./PESQ +{} {} {}".format(self.sr, source_path, estimated_path)
-                    command += " | grep Prediction | awk '{print $5}'"
-                    pesq_output = subprocess.check_output(command, shell=True)
-                    pesq_output = pesq_output.decode().strip()
+                    pesq += pypesq(self.sr, sources.squeeze().numpy(), estimated_sources.squeeze().numpy(), 'wb' )
+                    # # Target
+                    # norm = torch.abs(source).max()
+                    # source /= norm
+                    # if self.out_dir is not None:
+                    #     source_path = os.path.join(self.out_dir, "{}-target.wav".format(mixture_ID))
+                    # else:
+                    #     source_path = "tmp-target_{}.wav".format(random_ID)
+                    # signal = source.unsqueeze(dim=0) if source.dim() == 1 else source
+                    # torchaudio.save(source_path, signal, sample_rate=self.sr, bits_per_sample=BITS_PER_SAMPLE_WSJ0)
                     
-                    if pesq_output == '':
-                        # If processing error occurs in PESQ software, it is regarded as PESQ score is -0.5. (minimum of PESQ)
-                        n_pesq_error += 1
-                        pesq += MIN_PESQ
-                    else:
-                        pesq += float(pesq_output)
+                    # command = "./PESQ +{} {} {}".format(self.sr, source_path, estimated_path)
+                    # command += " | grep Prediction | awk '{print $5}'"
+                    # pesq_output = subprocess.check_output(command, shell=True)
+                    # pesq_output = pesq_output.decode().strip()
                     
-                    subprocess.call("rm {}".format(source_path), shell=True)
-                    # subprocess.call("rm {}".format(estimated_path), shell=True)
+                    # if pesq_output == '':
+                    #     # If processing error occurs in PESQ software, it is regarded as PESQ score is -0.5. (minimum of PESQ)
+                    #     n_pesq_error += 1
+                    #     pesq += MIN_PESQ
+                    # else:
+                    #     pesq += float(pesq_output)
                     
-                    pesq /= self.n_sources
+                    # subprocess.call("rm {}".format(source_path), shell=True)
+                    # # subprocess.call("rm {}".format(estimated_path), shell=True)
+                    
+                    # pesq /= self.n_sources
                 # print("{}, {:.3f}, {:.3f}, {:.3f}, {:.3f}, {:.3f}, {:.3f}".format(mixture_ID, loss.item(), loss_improvement, sdr_improvement, sir_improvement, sar, pesq),flush=True)
                 # print("{}, {:.3f}, {:.3f}, {:.3f}, {:.3f}, {:.3f}, {:.3f}".format(mixture_ID, loss.item(), loss_improvement, sdr_improvement, si_snr_score, sar, pesq),flush=True)
                 tqdm.write("{}, {:.3f}, {:.3f}, {:.3f}, {:.3f}, {:.3f}, {:.3f} {:.3f}".format(mixture_ID, loss.item(), loss_improvement, sdr_improvement, si_snr_score, sar, pesq, stoi))

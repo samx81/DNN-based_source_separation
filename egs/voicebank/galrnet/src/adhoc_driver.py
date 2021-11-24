@@ -17,8 +17,17 @@ class AdhocTrainer(TrainerBase):
             start = time.time()
             train_loss, valid_loss = self.run_one_epoch(epoch)
             end = time.time()
-            
-            print("[Epoch {}/{}] loss (train): {:.5f}, loss (valid): {:.5f}, {:.3f} [sec], no_improve: {}".format(epoch + 1, self.epochs, train_loss, valid_loss, end - start, self.no_improvement), flush=True)
+            if type(valid_loss) is tuple:
+                valid_loss, valid_loss_noise = valid_loss
+                postfix = ''
+                for i, n in enumerate(valid_loss_noise):
+                    postfix += f'({i}) {n:.5f}, '
+                print("[Epoch {}/{}] loss (train): {:.5f}, loss (valid): {:.5f}, {}{:.3f} [sec], best_loss:{:.5f}".format(
+                    epoch+1, self.epochs, train_loss, valid_loss, postfix, end - start, self.best_loss), flush=True)
+            else:
+                print("[Epoch {}/{}] loss (train): {:.5f}, loss (valid): {:.5f}, {:.3f} [sec], best_loss:{:.5f}".format(
+                    epoch+1, self.epochs, train_loss, valid_loss, end - start, self.best_loss), flush=True)
+            # print("[Epoch {}/{}] loss (train): {:.5f}, loss (valid): {:.5f}, {:.3f} [sec], no_improve: {}".format(epoch + 1, self.epochs, train_loss, valid_loss, end - start, self.no_improvement), flush=True)
             
             self.train_loss[epoch] = train_loss
             self.valid_loss[epoch] = valid_loss

@@ -680,15 +680,16 @@ class GALRNet_Denoise2(GALRNet):
             denoise_x, post = self.denoiser(w_hat, w_hat, o)
         else:
             denoise_x, post = self.denoiser(w_hat, w_hat)
+        #    denoise_x = mask
             # (bs, n_source, feat, time)
 
         # TODO: Remove this debug 
         if source is not None:
-            latent_denoise = self.mask_loss(post.unsqueeze(dim=1), w_hat)
+            #latent_denoise = self.mask_loss(post.unsqueeze(dim=1), mask)
             # latent_denoise = self.mask_loss(oracle_mask, denoise_x) * 0.7
             # latent_denoise += self.mask_loss(oracle_mask, mask) * 0.3
             # latent_denoise = torch.clamp(latent_denoise, 0, 10)
-            # latent_denoise = None
+             latent_denoise = None
             # latent_denoise = output_denoise
         else:
             output_denoise, latent_denoise = None, None
@@ -702,6 +703,15 @@ class GALRNet_Denoise2(GALRNet):
         output_denoise = F.pad(x_hat_denoise, (-padding_left, -padding_right))
         output_denoise = [output_denoise]
 
+        # w_hat_denoise = w * (denoise_x * 0.3 + mask * 0.7) 
+
+        # w_hat_denoise = w_hat_denoise.view(batch_size*n_sources, n_basis, -1)
+        # x_hat_denoise = self.decoder(w_hat_denoise)
+        # x_hat_denoise = x_hat_denoise.view(batch_size, n_sources, -1)
+
+        # output_denoise = F.pad(x_hat_denoise, (-padding_left, -padding_right))
+        # output_denoise = [output_denoise]
+
         latent = w_hat
         x_hat = w_hat.view(batch_size*n_sources, n_basis, -1)
         x_hat = self.decoder(x_hat)
@@ -711,6 +721,7 @@ class GALRNet_Denoise2(GALRNet):
 
         with torch.no_grad():
             no_diffusion, post = self.denoiser(w_hat, w_hat) # -> 傳入 encoder x?
+            # no_diffusion = mask
             latent = w * no_diffusion
 
             latent = latent.view(batch_size*n_sources, n_basis, -1)
@@ -719,6 +730,7 @@ class GALRNet_Denoise2(GALRNet):
             latent = F.pad(latent, (-padding_left, -padding_right))
 
             raw_diff, post = self.denoiser(w_hat, w_hat, diff=True)
+            raw_diff = w * raw_diff
             raw_diff = raw_diff.view(batch_size*n_sources, n_basis, -1)
             raw_diff = self.decoder(raw_diff)
             raw_diff = raw_diff.view(batch_size, n_sources, -1)
@@ -763,8 +775,8 @@ class PosteriorConverter(nn.Module):
     def __init__(self, in_feat, out_feat, causal=True, dropout=0.1, mask_nonlinear='softmax', eps=EPS):
         super().__init__()
 
-        self.conv1 = nn.Conv1d(in_feat, out_feat, 1)
-        self.conv2 = nn.Conv1d(out_feat, out_feat, 1)
+        self.conv1 = nn.Conv2d(in_feat, out_feat, 1)
+        self.conv2 = nn.Conv2d(out_feat, out_feat, 1)
         norm_name = 'cLN' if causal else 'gLN'
         self.norm = choose_layer_norm(norm_name, out_feat, causal=causal, eps=eps)
         self.fc = nn.Linear(out_feat, out_feat)
@@ -795,7 +807,7 @@ class PosteriorConverter(nn.Module):
             x = self.dropout1d(x)
             
         x = self.norm(x)
-        x = self.fc(x.transpose(-1,-2)).transpose(-1,-2)
+        x = self.fc(x.transpose(1,-1)).transpose(1,-1)
 
         x = self.mask_nonlinear(x)
 
@@ -838,7 +850,7 @@ class Denoiser(nn.Module):
         self.alphas = 1.0 - self.betas
         self.alphas_bar = torch.tensor(np.concatenate(([1], np.cumprod(self.alphas))), dtype=torch.float32)
 
-        self.posterior = PosteriorConverter(num_features, num_features * 4, causal=causal, eps=eps)
+        self.posterior = PosteriorConverter(num_features, num_features * 4, causal=causal, eps=eps, mask_nonlinear='sigmoid')
         self.fc = nn.Linear(num_features * 4, num_features)
 
         self.overlap_add1d = OverlapAdd1d(chunk_size, hop_size)
@@ -858,13 +870,14 @@ class Denoiser(nn.Module):
             
     def diffusion4(self, x, var, mask, noise_level=None):
         batch_size = x.shape[0]
+        chunks = x.shape[2]
         #Uniform index
-        idx = torch.randint(0, len(self.betas), size=(batch_size,))
+        idx = torch.randint(0, len(self.betas), size=(batch_size, chunks,))
         lb = self.alphas_bar[idx + 1]
         ub = self.alphas_bar[idx]
         if not noise_level:
-            noise_level = torch.rand(size=(batch_size,)) * (ub - lb) + lb
-            noise_level = noise_level.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).to(device=x.device)
+            noise_level = torch.rand(size=(batch_size, chunks,)) * (ub - lb) + lb
+            noise_level = noise_level.unsqueeze(1).unsqueeze(-1).to(device=x.device)
         noisy_x = torch.sqrt(noise_level) * x + torch.sqrt(1.0 - noise_level) * torch.randn_like(x) * var
         # return noisy_x
         return x * mask + noisy_x * (1 - mask)
@@ -884,49 +897,52 @@ class Denoiser(nn.Module):
         padding_left = padding//2
         padding_right = padding - padding_left
 
+        src = src.view(batch_size*n_sources, num_features, n_frames)     
+        src = F.pad(src, (padding_left, padding_right))
+        src = self.segment1d(src) # -> (batch_size, C, S, chunk_size)
+        src = self.norm2d(src)
+
+        src = self.posterior(src)
+        src = self.fc(src.transpose(1,-1)).transpose(1,-1)
+        # src = src.squeeze()
+
         x = x.view(batch_size*n_sources, num_features, n_frames)
+        x = F.pad(x, (padding_left, padding_right))
+        x = self.segment1d(x) # -> (batch_size, C, S, chunk_size)
+        x = self.norm2d(x)
 
         if source is not None:
             # mean = (source + x) / 2
             # var = source - mean
             source = source.view(batch_size*n_sources, num_features, n_frames)
+            source = F.pad(source, (padding_left, padding_right))
+            source = self.segment1d(source) # -> (batch_size, C, S, chunk_size)
+            source = self.norm2d(source)
 
-            source_post = self.posterior(source).unsqueeze(1)
-            x           = self.posterior(x).unsqueeze(1)
+            source_post = self.posterior(source)
+            x           = self.posterior(x)
 
+
+            # 這裡可以再調整，如讓 freq bin 被收縮後，若相近就保留
             keep_mask = torch.abs(source_post - x).le(0.01).float()
 
-            var = torch.max(source_post * 0.1, x)
-            
+            var = torch.max(source_post * 0.3, x)
  
             noisy_x = self.diffusion4(x, var, keep_mask)
 
             # x = self.fc(x.transpose(-1,-2)).transpose(-1,-2)
-            noisy_x = self.fc(noisy_x.transpose(-1,-2)).transpose(-1,-2)
+            noisy_x = self.fc(noisy_x.transpose(1,-1)).transpose(1,-1)
             
             # x = x * keep_mask + noisy_x * (1 - keep_mask)
-            x = noisy_x.squeeze()
+            x = noisy_x
         else:
-            x = self.posterior(x).unsqueeze(1)
+            x = self.posterior(x)
             if diff:
                 x = self.diffusion4(x, x, torch.zeros_like(x))
-            x = self.fc(x.transpose(-1,-2)).transpose(-1,-2)
-            x = x.squeeze()
+            x = self.fc(x.transpose(1,-1)).transpose(1,-1)
+            # x = x.squeeze()
 
-        src = src.view(batch_size*n_sources, num_features, n_frames)
-        src = self.posterior(src).unsqueeze(1)
-        src = self.fc(src.transpose(-1,-2)).transpose(-1,-2)
-        src = src.squeeze()
-        
-        src = F.pad(src, (padding_left, padding_right))
-        src = self.segment1d(src) # -> (batch_size, C, S, chunk_size)
-        src = self.norm2d(src)
-
-        x_post = F.pad(x, (padding_left, padding_right))
-        x_post = self.segment1d(x_post) # -> (batch_size, C, S, chunk_size)
-        x_post = self.norm2d(x_post)
-
-        x_post = self.decoder(x_post, src)
+        x_post = self.decoder(x, src)
         x_post = self.overlap_add1d(x_post)
         x_post = F.pad(x_post, (-padding_left, -padding_right))
 
@@ -935,8 +951,11 @@ class Denoiser(nn.Module):
         x_post = self.gtu(x_post) # -> (batch_size*n_sources, num_features, n_frames)
         x_post = self.mask_nonlinear(x_post) # -> (batch_size*n_sources, num_features, n_frames)
         output = x_post.view(batch_size, n_sources, num_features, n_frames)
+
+        raw_post = self.overlap_add1d(x)
+        raw_post = F.pad(raw_post, (-padding_left, -padding_right))
         
-        return output, x
+        return output, raw_post
 
 class Separator(nn.Module):
     def __init__(
