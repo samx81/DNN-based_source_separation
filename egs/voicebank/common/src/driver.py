@@ -159,8 +159,8 @@ class TrainerBase:
                 print("[Epoch {}/{}] loss (train): {:.5f}, loss (valid): {:.5f}, (noise) {:.5f}, {:.3f} [sec], best_loss:{:.5f}".format(
                     epoch+1, self.epochs, train_loss, valid_loss, valid_loss_noise, end - start, self.best_loss), flush=True)
             else:
-                print("[Epoch {}/{}] loss (train): {:.5f}, loss (valid): {:.5f}, {:.3f} [sec], best_loss:{:.5f}".format(
-                    epoch+1, self.epochs, train_loss, valid_loss, end - start, self.best_loss), flush=True)
+                print("[Epoch {}/{}] loss (train): {:.5f}, loss (valid): {:.5f}, {:.3f} [sec], best_loss:{:.5f}, imp{}".format(
+                    epoch+1, self.epochs, train_loss, valid_loss, end - start, self.best_loss, self.no_improvement), flush=True)
             
             
             self.train_loss[epoch] = train_loss
@@ -218,38 +218,10 @@ class TrainerBase:
                 mixture = mixture.cuda()
                 sources = sources.cuda()
 
-            # estimated_sources, _, estimated_sources_denoise, _ = self.model(mixture)
-            estimated_sources, raw_denoise, estimated_sources_denoise, maskloss = self.model(mixture, sources[:,0])
-            # loss = self.pit_criterion(estimated_sources[:,0], sources)
-            # print(estimated_sources.shape, sources.shape)
+            estimated_sources, _, = self.model(mixture)
 
             loss = self.criterion(estimated_sources[:,0], sources[:,0])
-            # print(loss, flush=True)
-            if estimated_sources_denoise is not None:
-                loss_noise = loss.detach().item()
-                with torch.no_grad():
-                    raw_den_loss = self.criterion(raw_denoise[:,0], sources[:,0])
-                ###
-                loss_denoise_lst = []
-                alpha = 0.3
-                loss *= alpha
-                
-                loss_frac = (1-alpha) / (len(estimated_sources_denoise)+2)
-                ###
-                # loss_denoise_lst = [estimated_sources_denoise]
-                # loss += estimated_sources_denoise
-
-                for i, v in enumerate(estimated_sources_denoise):
-                    loss_denoise = self.criterion(v[:,0], sources[:,0])
-                    loss_denoise_lst.append(loss_denoise)
-                    if i == len(estimated_sources_denoise)-1:
-                        loss += 3 * loss_frac * loss_denoise
-                    # else:
-                    #     loss += loss_frac * loss_denoise
-                if maskloss is not None:
-                    loss += maskloss
-
-
+            
             if self.noise_loss:
                 loss += self.criterion(estimated_sources[:,1], sources[:,1])
             
@@ -262,15 +234,8 @@ class TrainerBase:
             self.optimizer.step()
             
             train_loss += loss.item()
-            if estimated_sources_denoise is not None:
-                postfix = f'raw: {raw_den_loss.item():.4f} '
-                for i, v in enumerate(loss_denoise_lst):
-                    postfix += f'{i}: {v.item():.4f} '
-                if maskloss is not None:
-                    postfix += f'mask: {maskloss:.4f} '
-                t.set_postfix_str(f'encoder: {loss_noise:.4f} {postfix}loss: {loss.item():.4f}')
-            else:
-                t.set_postfix_str(f'loss: {loss.item():.5f}')
+
+            t.set_postfix_str(f'loss: {loss.item():.5f}')
             
             if (idx + 1) % 500 == 0:
                 t.write("[Epoch {}/{}] iter {}/{} loss: {:.5f}".format(epoch+1, self.epochs, idx+1, n_train_batch, loss.item()))
@@ -297,21 +262,10 @@ class TrainerBase:
                 if self.use_cuda:
                     mixture = mixture.cuda()
                     sources = sources.cuda()
-                output, _, output_denoise, maskloss = self.model(mixture)
-                # loss, _ = self.pit_criterion(output[:,0], sources, batch_mean=False)
+                output, _, = self.model(mixture)
                 
                 #  loss = self.criterion(output[:,0], torch.squeeze(sources,0))
                 loss = self.criterion(output[:,0], sources[:,0])
-
-                if output_denoise is not None:
-                    # loss += output_denoise
-
-                    for i, v in enumerate(output_denoise):
-                        loss_denoise = self.criterion(v[:,0], sources[:,0])
-                        if len(valid_loss_denoise) > i:
-                            valid_loss_denoise[i] += loss_denoise.item()
-                        else:
-                            valid_loss_denoise.append(loss_denoise.item())
 
                 # loss = loss.sum(dim=0)
                 valid_loss += loss.item()
@@ -386,6 +340,7 @@ class TesterBase:
         
         self.use_cuda = args.use_cuda
         self.metric = args.no_metric
+        self.watermark = args.watermark
         
         package = torch.load(args.model_path, map_location=lambda storage, loc: storage)
         
@@ -393,6 +348,10 @@ class TesterBase:
             self.model.module.load_state_dict(package['state_dict'])
         else:
             self.model.load_state_dict(package['state_dict'])
+    
+    def model_estimate(self, mixture):
+        output, _ = self.model(mixture)
+        return output
     
     def run(self):
         self.model.eval()
@@ -425,10 +384,8 @@ class TesterBase:
                 loss_mixture = self.pit_criterion(mixture, sources, batch_mean=False)
                 loss_mixture = loss_mixture.sum(dim=0)
                 
-                output, _, output_denoise, _ = self.model(mixture)
-
-                #if output_denoise is not None:
-                #    output = output_denoise[-1] # 1102: We want best output
+                
+                output = self.model_estimate(mixture)
                 
                 output = output[:,0] # -> only need 1st output
                 
@@ -480,7 +437,10 @@ class TesterBase:
                 norm = torch.abs(estimated_source).max()
                 estimated_source /= norm
                 if self.out_dir is not None:
-                    estimated_path = os.path.join(self.out_dir, "{}-estimated.wav".format(mixture_ID))
+                    if self.watermark:
+                        estimated_path = os.path.join(self.out_dir, "{}-estimated.wav".format(mixture_ID))
+                    else:
+                        estimated_path = os.path.join(self.out_dir, "{}.wav".format(mixture_ID))
                 else:
                     estimated_path = "tmp-estimated_{}.wav".format(random_ID)
                 signal = estimated_source.unsqueeze(dim=0) if estimated_source.dim() == 1 else estimated_source

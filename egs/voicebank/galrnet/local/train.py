@@ -23,10 +23,10 @@ parser.add_argument('--train_list_path', type=str, default=None, help='Path for 
 parser.add_argument('--valid_list_path', type=str, default=None, help='Path for mix_<n_sources>_spk_<max,min>_cv_mix')
 parser.add_argument('--sr', type=int, default=10, help='Sampling rate')
 parser.add_argument('--duration', type=float, default=2, help='Duration')
-parser.add_argument('--random_mask', default=False, action='store_true')
+parser.add_argument('--conv', default=False, action='store_true')
 parser.add_argument('--valid_duration', type=float, default=4, help='Duration for valid dataset for avoiding memory error.')
-parser.add_argument('--enc_basis', type=str, default='trainable', choices=['DCCRN','DCTCN','trainable','Fourier','trainableFourier','trainableFourierTrainablePhase'], help='Encoder type')
-parser.add_argument('--dec_basis', type=str, default='trainable', choices=['DCCRN','DCTCN','trainable','Fourier','trainableFourier','trainableFourierTrainablePhase', 'pinv'], help='Decoder type')
+parser.add_argument('--enc_basis', type=str, default='trainable', choices=['DCT','TENET','TorchSTFT','DCCRN','DCTCN','trainable','Fourier','trainableFourier','trainableFourierTrainablePhase'], help='Encoder type')
+parser.add_argument('--dec_basis', type=str, default='trainable', choices=['DCT','TENET','TorchSTFT','DCCRN','DCTCN','trainable','Fourier','trainableFourier','trainableFourierTrainablePhase', 'pinv'], help='Decoder type')
 parser.add_argument('--no-low-dim', dest='low_dim', action='store_false')
 parser.add_argument('--noise_loss', default=False, action='store_true')
 parser.add_argument('--local_att', default=False, action='store_true')
@@ -49,7 +49,7 @@ parser.add_argument('--sep_dropout', type=float, default=0.1, help='Dropout rate
 parser.add_argument('--mask_nonlinear', type=str, default='sigmoid', help='Non-linear function of mask estiamtion')
 parser.add_argument('--causal', type=int, default=0, help='Causality')
 parser.add_argument('--n_sources', type=int, default=None, help='# speakers')
-parser.add_argument('--criterion', type=str, default='sisdr', choices=['pfp_sisdr','pfp_l2','pfp_thsnr','sisdr', 'this_sisdr', 'threshold_snr','demucs_l1','demucs_mse','mse'], help='Criterion')
+parser.add_argument('--criterion', type=str, default='sisdr', choices=['pfp_sisnr','pfp_l2','pfp_thsnr','sisdr', 'this_sisdr', 'threshold_snr','demucs_l1','demucs_mse','mse'], help='Criterion')
 parser.add_argument('--optimizer', type=str, default='adam', choices=['sgd', 'adam', 'rmsprop'], help='Optimizer, [sgd, adam, rmsprop]')
 parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate. Default: 1e-3')
 parser.add_argument('--weight_decay', type=float, default=0, help='Weight decay (L2 penalty). Default: 0')
@@ -71,13 +71,15 @@ def main(args):
     overlap = samples//2
     max_samples = int(args.sr * args.valid_duration)
     
-    train_dataset = WaveTrainDataset(args.train_wav_root, args.train_list_path, samples=samples, overlap=overlap, n_sources=args.n_sources,noise_loss=args.noise_loss)
+    train_dataset = WaveTrainDataset(args.train_wav_root, args.train_list_path, samples=samples, overlap=overlap, n_sources=args.n_sources,noise_loss=args.noise_loss,use_h5py=True)
     valid_dataset = WaveEvalDataset(args.valid_wav_root, args.valid_list_path, max_samples=max_samples, n_sources=args.n_sources)
     print("Training dataset includes {} samples.".format(len(train_dataset)))
     print("Valid dataset includes {} samples.".format(len(valid_dataset)))
     
     loader = {}
-    loader['train'] = TrainDataLoader(train_dataset, batch_size=args.batch_size, num_workers=8,shuffle=True)
+    dl_workers = 16
+    print('Dataloader workers:', dl_workers)
+    loader['train'] = TrainDataLoader(train_dataset, batch_size=args.batch_size, num_workers=dl_workers,shuffle=True)
     loader['valid'] = EvalDataLoader(valid_dataset, batch_size=1, num_workers=2, shuffle=False)
     if not args.enc_nonlinear:
         args.enc_nonlinear = None
@@ -92,7 +94,7 @@ def main(args):
         sep_chunk_size=args.sep_chunk_size, sep_hop_size=args.sep_hop_size, sep_down_chunk_size=args.sep_down_chunk_size, sep_num_blocks=args.sep_num_blocks,
         sep_num_heads=args.sep_num_heads, sep_norm=args.sep_norm, sep_dropout=args.sep_dropout,
         mask_nonlinear=args.mask_nonlinear,
-        causal=args.causal, random_mask=args.random_mask,
+        causal=args.causal, conv=args.conv,
         n_sources=args.n_sources,
         low_dimension=args.low_dim, local_att=args.local_att
     )

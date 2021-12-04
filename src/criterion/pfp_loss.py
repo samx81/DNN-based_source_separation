@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from fairseq.models.wav2vec import Wav2VecModel
+from fairseq.checkpoint_utils import load_model_ensemble_and_task
 
 class PerceptualLoss(nn.Module):
     def __init__(self,
@@ -16,9 +17,11 @@ class PerceptualLoss(nn.Module):
         self.loss_type = loss_type
 
         if model_type == 'wav2vec':
-            ckpt = torch.load(PRETRAINED_MODEL_PATH, map_location="cpu")
-            self.model = Wav2VecModel.build_model(ckpt['args'], task=None)
-            self.model.load_state_dict(ckpt['model'])
+            # ckpt = torch.load(PRETRAINED_MODEL_PATH, map_location="cpu")
+            # self.model = Wav2VecModel.build_model(ckpt['args'], task=None)
+            # self.model.load_state_dict(ckpt['model'])
+            model, cfg, task = load_model_ensemble_and_task([PRETRAINED_MODEL_PATH])
+            self.model = model[0]
             self.model = self.model.feature_extractor
             #self.model = nn.DataParallel(self.model)
             #device = 'cuda' if torch.cuda.is_available() else 'cpu'

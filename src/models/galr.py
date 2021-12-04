@@ -9,7 +9,7 @@ EPS=1e-12
 import random
 
 class GALR(nn.Module):
-    def __init__(self, num_features, hidden_channels, random_mask=False, num_blocks=6, num_heads=8, norm=True, dropout=0.1, low_dimension=True, causal=False, eps=EPS, **kwargs):
+    def __init__(self, num_features, hidden_channels, random_mask=False, conv=False, num_blocks=6, num_heads=8, norm=True, dropout=0.1, low_dimension=True, causal=False, eps=EPS, **kwargs):
         super().__init__()
         
         # Network confguration
@@ -23,6 +23,8 @@ class GALR(nn.Module):
         for i in range(num_blocks-1):
             if random_mask:
                 net.append(GALRBlock_Mask(num_features, hidden_channels, name=i+1,num_heads=num_heads, norm=norm, dropout=dropout, low_dimension=low_dimension, causal=causal, eps=eps, **kwargs))
+            elif conv:
+                net.append(GALRBlock_Conv(num_features, hidden_channels, name=i+1,num_heads=num_heads, norm=norm, dropout=dropout, low_dimension=low_dimension, causal=causal, eps=eps, **kwargs))
             else:
                 net.append(GALRBlock(num_features, hidden_channels, name=i+1,num_heads=num_heads, norm=norm, dropout=dropout, low_dimension=low_dimension, causal=causal, eps=eps, **kwargs))
             
@@ -107,6 +109,45 @@ class GALRBlock(nn.Module):
             x = self.intra_chunk_att(x)
 
         output = self.inter_chunk_block(x)
+
+        return output
+
+class GALRBlock_Conv(nn.Module):
+    def __init__(self, num_features, hidden_channels, name=None, random_mask=False, num_heads=8, causal=False, norm=True, dropout=0.1, low_dimension=True, eps=EPS, **kwargs):
+        super().__init__()
+        
+        self.intra_chunk_block = LocallyRecurrentBlock(num_features, hidden_channels=hidden_channels, norm=norm, eps=eps)
+
+        if kwargs.get('local_att', None):
+            self.intra_chunk_att = LocallyAttentiveBlock(num_features, num_heads=num_heads, causal=causal, norm=norm, dropout=dropout, eps=eps)
+        else:
+            self.intra_chunk_att = None
+        
+        self.conv2d = nn.Conv2d(num_features, num_features, 1,1)
+
+        if low_dimension:
+            chunk_size = kwargs['chunk_size']
+            down_chunk_size = kwargs['down_chunk_size']
+            self.inter_chunk_block = LowDimensionGloballyAttentiveBlock(num_features, name=name, masking=random_mask, chunk_size=chunk_size, down_chunk_size=down_chunk_size, num_heads=num_heads, causal=causal, norm=norm, dropout=dropout, eps=eps)
+        else:
+            self.inter_chunk_block = GloballyAttentiveBlock(num_features,name=name, masking=random_mask, num_heads=num_heads, causal=causal, norm=norm, dropout=dropout, eps=eps)
+        
+    def forward(self, input):
+        """
+        Args:
+            input (batch_size, num_features, S, chunk_size)
+        Returns:
+            output (batch_size, num_features, S, chunk_size)
+        """
+
+        x = self.intra_chunk_block(input)
+        
+        if self.intra_chunk_att:
+            x = self.intra_chunk_att(x)
+
+        output = self.inter_chunk_block(x)
+        
+        output = self.conv2d(output)
 
         return output
 

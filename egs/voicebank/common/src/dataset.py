@@ -5,6 +5,8 @@ import torchaudio
 import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
+import numpy as np
+import h5py
 
 from algorithm.frequency_mask import ideal_binary_mask, ideal_ratio_mask, wiener_filter_mask
 
@@ -18,7 +20,7 @@ class WSJ0Dataset(torch.utils.data.Dataset):
         self.list_path = os.path.abspath(list_path)
 
 class WaveDataset(WSJ0Dataset):
-    def __init__(self, wav_root, list_path, samples=32000, least_sample=None, overlap=None, n_sources=2, chunk=True, noise_loss=False):
+    def __init__(self, wav_root, list_path, samples=32000, least_sample=None, overlap=None, n_sources=2, chunk=True, noise_loss=False, use_h5py=False):
         super().__init__(wav_root, list_path)
 
         wav_root = os.path.abspath(wav_root)
@@ -27,7 +29,12 @@ class WaveDataset(WSJ0Dataset):
         noise_list_path = os.path.join(wav_root, 'noise.scp')
         length_list_path = os.path.join(wav_root, 'length.list')
 
+        # noisy_h5 = os.path.join(wav_root, 'noisy.h5')
+        # noisy_h5 = h5py.File(noisy_h5, 'a')
+        # noise_h5 = os.path.join(wav_root, 'clean.scp')
+
         self.noise_loss = noise_loss
+        self.use_h5py = use_h5py
         
         self.chunk = chunk
         self.samples = samples if samples else 16000 * 10
@@ -107,7 +114,7 @@ class WaveDataset(WSJ0Dataset):
                         'end': end_idx
                     }
                     data['mixture'] = mixture_data
-                    data['ID'] = id
+                    data['ID'] = f'{id}-{start_idx}-{start_idx}'
                 
                     self.json_data.append(data)
             else:
@@ -129,9 +136,34 @@ class WaveDataset(WSJ0Dataset):
                     'end': T_total
                 }
                 data['mixture'] = mixture_data
-                data['ID'] = id
+                data['ID'] = f'{id}'
             
                 self.json_data.append(data)
+
+        print('Use h5py', use_h5py)
+
+        if use_h5py:
+            self.id2idx = {v['ID']:i for i, v in enumerate(self.json_data)}
+            clean_h5 = os.path.join(wav_root, f'clean_{samples}.h5')
+            if os.path.isfile(clean_h5):
+                clean_h5 = h5py.File(clean_h5, 'r')
+            else:  
+                clean_h5 = h5py.File(clean_h5, 'a')
+
+            if 'clean' in clean_h5:
+                self.clean_dset = clean_h5.get('clean', None)
+                self.noisy_dset = clean_h5.get('noisy', None)
+                self.exist_dset = clean_h5.get('exist', None)
+                # self.id_dset = clean_h5.get('id', None)
+                
+            else:
+                self.clean_dset = clean_h5.create_dataset("clean", (len(self.json_data), samples), dtype='f')
+                self.noisy_dset = clean_h5.create_dataset("noisy", (len(self.json_data), samples), dtype='f')
+                self.exist_dset = clean_h5.create_dataset("exist", (len(self.json_data), ), dtype='?', fillvalue=False)
+                # dt = h5py.special_dtype(vlen=str)
+                # self.id_dset = clean_h5.create_dataset("id", (len(self.json_data),), dtype=dt)
+                # self.id2idx = {v:i for i,v in enumerate(self.id_dset)}
+        
         print(len(self.json_data), flush=True)
         
     def __getitem__(self, idx):
@@ -146,38 +178,48 @@ class WaveDataset(WSJ0Dataset):
 
         mixture_data = data['mixture']
         start, end = mixture_data['start'], mixture_data['end']
-        wav_path = os.path.join(self.wav_root, mixture_data['path'])
-        wave, _ = torchaudio.load(wav_path)
-        mixture = wave[:, start: end]
+            
+        segment_ID = self.json_data[idx]['ID'] + '_{}-{}'.format(start, end)
 
-        if self.noise_loss:
-            noise_data = data['noise']
-            start, end = noise_data['start'], noise_data['end']
-            wav_path = noise_data['path']
+        if self.use_h5py and self.exist_dset[idx]:
+            wave = torch.tensor(np.array(self.clean_dset[idx])).unsqueeze(0)
+            mixture = torch.tensor(np.array(self.noisy_dset[idx])).unsqueeze(0)
+        else:
+            wav_path = os.path.join(self.wav_root, mixture_data['path'])
             wave, _ = torchaudio.load(wav_path)
-            noise = wave[:, start: end]
-        
-        source_data = data['sources']
-        start, end = source_data['start'], source_data['end']
-        wav_path = source_data['path']
-        wave, _ = torchaudio.load(wav_path)
-        wave = wave[:, start: end]
-        
-        wav_len = end - start
-        if self.chunk and wav_len < self.samples:
-            P = self.samples - wav_len
-            wave = F.pad(wave, (0, P), "constant")
-            mixture = F.pad(mixture, (0, P), "constant")
+            mixture = wave[:, start: end]
+
             if self.noise_loss:
-                noise = F.pad(noise, (0, P), "constant")
+                noise_data = data['noise']
+                start, end = noise_data['start'], noise_data['end']
+                wav_path = noise_data['path']
+                wave, _ = torchaudio.load(wav_path)
+                noise = wave[:, start: end]
+            
+            source_data = data['sources']
+            start, end = source_data['start'], source_data['end']
+            wav_path = source_data['path']
+            wave, _ = torchaudio.load(wav_path)
+            wave = wave[:, start: end]
+            
+            wav_len = end - start
+            if self.chunk and wav_len < self.samples:
+                P = self.samples - wav_len
+                wave = F.pad(wave, (0, P), "constant")
+                mixture = F.pad(mixture, (0, P), "constant")
+                if self.noise_loss:
+                    noise = F.pad(noise, (0, P), "constant")
+
+            if self.use_h5py:
+                self.exist_dset[idx] = True
+                self.clean_dset[idx] = wave[0]
+                self.noisy_dset[idx] = mixture[0]
         
         sources.append(wave)
         if self.noise_loss:
             sources.append(noise)
         
         sources = torch.cat(sources, dim=0)
-            
-        segment_ID = self.json_data[idx]['ID'] + '_{}-{}'.format(start, end)
         
         return mixture, sources, segment_ID
         
@@ -185,8 +227,8 @@ class WaveDataset(WSJ0Dataset):
         return len(self.json_data)
 
 class WaveTrainDataset(WaveDataset):
-    def __init__(self, wav_root, list_path, samples=32000, overlap=None, n_sources=2, noise_loss=False):
-        super().__init__(wav_root, list_path, samples=samples, overlap=overlap, n_sources=n_sources, noise_loss=noise_loss)
+    def __init__(self, wav_root, list_path, samples=32000, overlap=None, n_sources=2, noise_loss=False, use_h5py=False):
+        super().__init__(wav_root, list_path, samples=samples, overlap=overlap, n_sources=n_sources, noise_loss=noise_loss, use_h5py=use_h5py)
     
     def __getitem__(self, idx):
         mixture, sources, _ = super().__getitem__(idx)

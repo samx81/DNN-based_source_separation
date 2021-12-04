@@ -24,6 +24,7 @@ parser.add_argument('--model_path', type=str, default='./tmp/model/best.pth', he
 parser.add_argument('--use_cuda', type=int, default=1, help='0: Not use cuda, 1: Use cuda')
 parser.add_argument('--overwrite', type=int, default=0, help='0: NOT overwrite, 1: FORCE overwrite')
 parser.add_argument('--no_metric', default=True, action='store_false')
+parser.add_argument('--watermark', default=True, action='store_false')
 parser.add_argument('--seed', type=int, default=42, help='Random seed')
 
 def main(args):

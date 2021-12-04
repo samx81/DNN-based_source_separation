@@ -31,6 +31,8 @@ echo $basis
 
 D=64
 M=16 # M corresponds to the window length (samples) in this script.
+stride=
+conv=
 
 # Separator
 H=128
@@ -119,6 +121,8 @@ train.py \
 -Q ${Q} \
 -N ${N} \
 -J ${J} \
+${conv:+"--conv"} \
+${stride:+"--stride"} ${stride:+"$stride"} \
 --causal ${causal} \
 --sep_norm ${sep_norm} \
 --sep_dropout ${sep_dropout} \
