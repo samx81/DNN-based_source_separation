@@ -25,8 +25,8 @@ parser.add_argument('--sr', type=int, default=10, help='Sampling rate')
 parser.add_argument('--duration', type=float, default=2, help='Duration')
 parser.add_argument('--conv', default=False, action='store_true')
 parser.add_argument('--valid_duration', type=float, default=4, help='Duration for valid dataset for avoiding memory error.')
-parser.add_argument('--enc_basis', type=str, default='trainable', choices=['DCT','TENET','TorchSTFT','DCCRN','DCTCN','trainable','Fourier','trainableFourier','trainableFourierTrainablePhase'], help='Encoder type')
-parser.add_argument('--dec_basis', type=str, default='trainable', choices=['DCT','TENET','TorchSTFT','DCCRN','DCTCN','trainable','Fourier','trainableFourier','trainableFourierTrainablePhase', 'pinv'], help='Decoder type')
+parser.add_argument('--enc_basis', type=str, default='trainable', choices=['FiLM_DCT', 'DCT','TENET','TorchSTFT','DCCRN','DCTCN','trainable','Fourier','trainableFourier','trainableFourierTrainablePhase'], help='Encoder type')
+parser.add_argument('--dec_basis', type=str, default='trainable', choices=['FiLM_DCT','DCT','TENET','TorchSTFT','DCCRN','DCTCN','trainable','Fourier','trainableFourier','trainableFourierTrainablePhase', 'pinv'], help='Decoder type')
 parser.add_argument('--no-low-dim', dest='low_dim', action='store_false')
 parser.add_argument('--noise_loss', default=False, action='store_true')
 parser.add_argument('--local_att', default=False, action='store_true')
@@ -63,7 +63,9 @@ parser.add_argument('--continue_from', type=str, default=None, help='Resume trai
 parser.add_argument('--use_cuda', type=int, default=1, help='0: Not use cuda, 1: Use cuda')
 parser.add_argument('--overwrite', type=int, default=0, help='0: NOT overwrite, 1: FORCE overwrite')
 parser.add_argument('--seed', type=int, default=42, help='Random seed')
-
+parser.add_argument('--worker', type=int, default=16, help='Random seed')
+parser.add_argument('--handcraft', default=False, action='store_true')
+parser.add_argument('--intra_dropout', default=False, action='store_true')
 def main(args):
     set_seed(args.seed)
     
@@ -77,7 +79,7 @@ def main(args):
     print("Valid dataset includes {} samples.".format(len(valid_dataset)))
     
     loader = {}
-    dl_workers = 16
+    dl_workers = args.worker
     print('Dataloader workers:', dl_workers)
     loader['train'] = TrainDataLoader(train_dataset, batch_size=args.batch_size, num_workers=dl_workers,shuffle=True)
     loader['valid'] = EvalDataLoader(valid_dataset, batch_size=1, num_workers=2, shuffle=False)
@@ -86,7 +88,7 @@ def main(args):
     if args.max_norm is not None and args.max_norm == 0:
         args.max_norm = None
 
-    print(f'uses low_dim :{args.low_dim}')
+    # print(f'uses low_dim :{args.low_dim}')
     model = GALRNet(
         args.n_bases, args.kernel_size, stride=args.stride, enc_basis=args.enc_basis, dec_basis=args.dec_basis, enc_nonlinear=args.enc_nonlinear, 
         window_fn=args.window_fn,enc_onesided=args.enc_onesided, enc_return_complex=args.enc_return_complex,
@@ -95,8 +97,8 @@ def main(args):
         sep_num_heads=args.sep_num_heads, sep_norm=args.sep_norm, sep_dropout=args.sep_dropout,
         mask_nonlinear=args.mask_nonlinear,
         causal=args.causal, conv=args.conv,
-        n_sources=args.n_sources,
-        low_dimension=args.low_dim, local_att=args.local_att
+        n_sources=args.n_sources, handcraft=args.handcraft,
+        low_dimension=args.low_dim, local_att=args.local_att,intra_dropout=args.intra_dropout
     )
     print(model)
     print("# Parameters: {}".format(model.num_parameters))

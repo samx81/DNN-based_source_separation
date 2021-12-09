@@ -211,8 +211,8 @@ class TrainerBase:
         
         train_loss = 0
         n_train_batch = len(self.train_loader)
-        t = tqdm(enumerate(self.train_loader), leave=False,
-                    total=(len(self.train_loader)//self.train_loader.batch_size))
+        total_steps = (len(self.train_loader)//self.train_loader.batch_size)
+        t = tqdm(enumerate(self.train_loader), leave=False, total=total_steps)
         for idx, (mixture, sources) in t:
             if self.use_cuda:
                 mixture = mixture.cuda()
@@ -238,7 +238,7 @@ class TrainerBase:
             t.set_postfix_str(f'loss: {loss.item():.5f}')
             
             if (idx + 1) % 500 == 0:
-                t.write("[Epoch {}/{}] iter {}/{} loss: {:.5f}".format(epoch+1, self.epochs, idx+1, n_train_batch, loss.item()))
+                t.write("[Epoch {}/{}] iter {}/{} loss: {:.5f}".format(epoch+1, self.epochs, idx+1, total_steps, loss.item()))
         
         train_loss /= n_train_batch
         
@@ -339,7 +339,7 @@ class TesterBase:
             os.makedirs(self.out_dir, exist_ok=True)
         
         self.use_cuda = args.use_cuda
-        self.metric = args.no_metric
+        self.metric = args.no_metric if args.no_metric is not None else False
         self.watermark = args.watermark
         
         package = torch.load(args.model_path, map_location=lambda storage, loc: storage)

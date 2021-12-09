@@ -3,6 +3,7 @@
 exp_dir="./exp"
 continue_from=""
 tag=""
+worker=16
 
 n_sources=2
 sr_k=8 #sr_k=8 means sampling rate is 8kHz. Choose from 8kHz or 16kHz.
@@ -33,7 +34,9 @@ D=64
 M=16 # M corresponds to the window length (samples) in this script.
 stride=
 conv=
-
+local_att=
+handcraft=
+intra_dropout=
 # Separator
 H=128
 K=100
@@ -102,6 +105,7 @@ time_stamp=`TZ=UTC-9 date "+%Y%m%d-%H%M%S"`
 export CUDA_VISIBLE_DEVICES="${gpu_id}"
 
 train.py \
+--worker ${worker} \
 --train_wav_root ${train_wav_root} \
 --valid_wav_root ${valid_wav_root} \
 --train_list_path ${train_list_path} \
@@ -121,7 +125,10 @@ train.py \
 -Q ${Q} \
 -N ${N} \
 -J ${J} \
+${handcraft:+"--handcraft"} \
+${intra_dropout:+"--intra_dropout"} \
 ${conv:+"--conv"} \
+${local_att:+"--local_att"} \
 ${stride:+"--stride"} ${stride:+"$stride"} \
 --causal ${causal} \
 --sep_norm ${sep_norm} \

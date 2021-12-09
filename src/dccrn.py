@@ -5,6 +5,7 @@ from conv_stft import ConvSTFT, ConviSTFT
 from tenet_stft import STFT, ISTFT
 from complexnn import ComplexConv2d, ComplexConvTranspose2d, ComplexBatchNorm
 from models.tcn import TemporalConvNet
+from models.film import FiLM2d
 from utils.utils_tasnet import choose_layer_norm
 import dct
 
@@ -451,6 +452,126 @@ class Naked_Decoder(nn.Module):
                 feat_type='fft'):
 
         super(Naked_Decoder, self).__init__() 
+
+        self.win_len = win_len
+        self.win_inc = win_inc
+        self.fft_len = fft_len
+        self.feat_type = feat_type 
+        # self.transform = ISTFT(fft_len, win_len, win_inc, win_type=win_type)
+        if feat_type == 'fft':
+            self.inv_transform = torch.istft
+            self.prelu = nn.PReLU(fft_len + 2)
+            self.bottleneck_conv1d = nn.Conv1d(fft_len, fft_len + 2, kernel_size=1)
+            # self.norm2d = choose_layer_norm(norm_name, fft_len, causal=causal, eps=eps)
+        elif feat_type == 'dct':
+            self.inv_transform = dct.isdct_torch
+        elif feat_type == 'TENET':
+            # pass
+            self.inv_transform = ISTFT(fft_len, win_len, win_inc, win_type=win_type)
+
+        # TODO: let window tensor can be auto convert to fft length
+        if win_type == 'hanning':
+            if feat_type == 'dct':
+                self.window = torch.hann_window
+            else:
+                self.window = torch.hann_window(win_len).cuda()
+
+    def forward(self, inputs):
+        # when inference, only one utt
+        # if inputs.dim() == 4:
+        if self.feat_type == 'TENET':
+            out_wav = self.inv_transform(inputs)
+        elif self.feat_type == 'dct':
+            out_wav = self.inv_transform(inputs, window_length=self.win_len, frame_step=self.win_inc, window=self.window)
+        else:
+            out = self.bottleneck_conv1d(inputs)
+            out = self.prelu(out)
+            bsxS, feat, time = out.shape
+            out = out.view(bsxS, feat//2, 2, time)
+            out = out.transpose(-1,-2)
+
+            # batchsize, dims, length
+            
+            out_wav = self.inv_transform(out, self.fft_len, self.win_inc, self.win_len, self.window)
+        # out_wav = out_wav.view(batch_size, S, -1)
+        return out_wav
+
+class CustomFiLM(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, input, gamma, beta):
+        """
+        Args:
+            input (batch_size, num_features, *)
+            gamma (batch_size, num_features)
+            beta (batch_size, num_features)
+        Returns:
+            output (batch_size, num_features, *)
+        """
+        # n_dims = input.dim()
+        # expand_dims = (1,) * (n_dims - 2)
+        # dims = gamma.size() + expand_dims
+
+        # gamma = gamma.view(*dims)
+        # beta = beta.view(*dims)
+        
+        return gamma * input + beta
+
+class FiLM_Encoder(nn.Module):
+    def __init__(self, win_len=400, win_inc=100, fft_len=512, 
+                        win_type='hanning', causal=True, eps=EPS):
+
+        super(FiLM_Encoder, self).__init__() 
+
+        self.win_len = win_len
+        self.win_inc = win_inc
+        self.fft_len = fft_len
+        # self.feat_type = feat_type
+
+        self.transform_dct = dct.sdct_torch
+        self.prelu = nn.PReLU(fft_len)
+
+        self.transform_cstft = STFT(fft_len, win_len, win_inc, win_type=win_type,center=True)
+
+        self.film = CustomFiLM()
+        # self.affine = nn.Linear()
+        self.affine_h = nn.Conv1d(fft_len, fft_len, kernel_size=1)
+        self.affine_r = nn.Conv1d(fft_len, fft_len, kernel_size=1)
+
+        if win_type == 'hanning':
+            self.window = torch.hann_window
+
+
+    def forward(self, inputs):
+        # when inference, only one utt
+        if inputs.dim() == 1:
+            inputs = torch.unsqueeze(inputs, 0)
+        elif inputs.dim() == 3:
+            inputs = inputs.view(-1, inputs.shape[-1])
+
+        cstft = self.transform_cstft(inputs)
+        h = self.affine_h(cstft)
+        r = self.affine_r(cstft)
+
+        dct = self.transform_dct(inputs, self.fft_len, self.win_len, self.win_inc, window=self.window)
+        dct = self.prelu(dct)
+
+        film = self.film(dct, r, h)
+
+        out = dct + film
+
+        return out, dct
+
+class FiLM_Decoder(nn.Module):
+    def __init__(self, 
+                win_len=400,
+                win_inc=100, 
+                fft_len=512,
+                win_type='hanning',
+                feat_type='fft'):
+
+        super(FiLM_Decoder, self).__init__() 
 
         self.win_len = win_len
         self.win_inc = win_inc

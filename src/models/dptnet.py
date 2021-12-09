@@ -7,6 +7,7 @@ from utils.utils_tasnet import choose_layer_norm
 from models.gtu import GTU1d
 from models.dprnn_tasnet import Segment1d, OverlapAdd1d
 from models.dptransformer import DualPathTransformer
+from dccrn import Naked_Encoder, Naked_Decoder
 
 EPS=1e-12
 
@@ -69,20 +70,34 @@ class DPTNet(nn.Module):
         
         self.n_sources = n_sources
         self.eps = eps
-        
-        # Network configuration
-        encoder, decoder = choose_filterbank(n_basis, kernel_size=kernel_size, stride=stride, enc_basis=enc_basis, dec_basis=dec_basis, **kwargs)
+
+        if 'TENET' in [enc_basis, dec_basis]:
+            encoder, decoder = Naked_Encoder(feat_type='TENET', causal=causal), Naked_Decoder(feat_type='TENET')
+        else:        
+            # Network configuration
+            encoder, decoder = choose_filterbank(n_basis, kernel_size=kernel_size, stride=stride, enc_basis=enc_basis, dec_basis=dec_basis, **kwargs)
         
         self.encoder = encoder
-        self.separator = Separator(
-            n_basis, bottleneck_channels=sep_bottleneck_channels, hidden_channels=sep_hidden_channels,
-            chunk_size=sep_chunk_size, hop_size=sep_hop_size, num_blocks=sep_num_blocks,
-            num_heads=sep_num_heads, norm=sep_norm, nonlinear=sep_nonlinear, dropout=sep_dropout,
-            mask_nonlinear=mask_nonlinear,
-            causal=causal,
-            n_sources=n_sources,
-            eps=eps
-        )
+        if enc_basis in ['TENET']:
+            self.separator = Separator_HC(
+                        n_basis, bottleneck_channels=sep_bottleneck_channels, hidden_channels=sep_hidden_channels,
+                        chunk_size=sep_chunk_size, hop_size=sep_hop_size, num_blocks=sep_num_blocks,
+                        num_heads=sep_num_heads, norm=sep_norm, nonlinear=sep_nonlinear, dropout=sep_dropout,
+                        mask_nonlinear=mask_nonlinear,
+                        causal=causal,
+                        n_sources=n_sources,
+                        eps=eps
+                    )
+        else:
+            self.separator = Separator(
+                n_basis, bottleneck_channels=sep_bottleneck_channels, hidden_channels=sep_hidden_channels,
+                chunk_size=sep_chunk_size, hop_size=sep_hop_size, num_blocks=sep_num_blocks,
+                num_heads=sep_num_heads, norm=sep_norm, nonlinear=sep_nonlinear, dropout=sep_dropout,
+                mask_nonlinear=mask_nonlinear,
+                causal=causal,
+                n_sources=n_sources,
+                eps=eps
+            )
         self.decoder = decoder
         
     def forward(self, input):
@@ -105,8 +120,11 @@ class DPTNet(nn.Module):
         batch_size, C_in, T = input.size()
         
         assert C_in == 1, "input.size() is expected (?, 1, ?), but given {}".format(input.size())
-        
-        padding = (stride - (T - kernel_size) % stride) % stride
+
+        if self.enc_basis in ['TENET']:
+            padding = (100 - (T - 400) % 100) % 100
+        else:
+            padding = (stride - (T - kernel_size) % stride) % stride
         padding_left = padding // 2
         padding_right = padding - padding_left
 
@@ -213,6 +231,98 @@ class DPTNet(nn.Module):
                 
         return _num_parameters
 
+class Separator_HC(nn.Module):
+    def __init__(
+        self,
+        num_features, bottleneck_channels=32, hidden_channels=128,
+        chunk_size=100, hop_size=None, num_blocks=6,
+        num_heads=4,
+        norm=True, nonlinear='relu', dropout=0,
+        mask_nonlinear='relu',
+        causal=True,
+        n_sources=2,
+        eps=EPS
+    ):
+        super().__init__()
+
+        if hop_size is None:
+            hop_size = chunk_size//2
+        
+        self.num_features, self.n_sources = num_features, n_sources
+        self.chunk_size, self.hop_size = chunk_size, hop_size
+        
+        # self.bottleneck_conv1d = nn.Conv1d(num_features, bottleneck_channels, kernel_size=1, stride=1)
+        self.segment1d = Segment1d(chunk_size, hop_size)
+
+        self.conv2d = nn.Conv2d(num_features, bottleneck_channels, 1,1)
+        self.iconv2d = nn.Conv2d(bottleneck_channels, num_features, 1,1) 
+        
+        norm_name = 'cLN' if causal else 'gLN'
+        self.norm2d = choose_layer_norm(norm_name, num_features, causal=causal, eps=eps)
+
+        self.dptransformer = DualPathTransformer(
+            bottleneck_channels, hidden_channels,
+            num_blocks=num_blocks, num_heads=num_heads,
+            norm=norm, nonlinear=nonlinear, dropout=dropout,
+            causal=causal, eps=eps
+        )
+        self.overlap_add1d = OverlapAdd1d(chunk_size, hop_size)
+        self.prelu = nn.PReLU()
+        self.map = nn.Conv1d(num_features, n_sources*num_features, kernel_size=1, stride=1)
+        self.gtu = GTU1d(num_features, num_features, kernel_size=1, stride=1)
+        
+        if mask_nonlinear == 'relu':
+            self.mask_nonlinear = nn.ReLU()
+        elif mask_nonlinear == 'sigmoid':
+            self.mask_nonlinear = nn.Sigmoid()
+        elif mask_nonlinear == 'tanh':
+            self.mask_nonlinear = nn.Tanh()
+        elif mask_nonlinear == 'softmax':
+            self.mask_nonlinear = nn.Softmax(dim=1)
+        else:
+            raise ValueError("Cannot support {}".format(mask_nonlinear))
+            
+    def forward(self, input):
+        """
+        Args:
+            input (batch_size, num_features, n_frames)
+        Returns:
+            output (batch_size, n_sources, num_features, n_frames)
+        """
+        num_features, n_sources = self.num_features, self.n_sources
+        chunk_size, hop_size = self.chunk_size, self.hop_size
+        batch_size, num_features, n_frames = input.size()
+        
+        padding = (hop_size - (n_frames - chunk_size) % hop_size) % hop_size
+        padding_left = padding // 2
+        padding_right = padding - padding_left
+        # x = self.bottleneck_conv1d(input)
+
+        x = F.pad(input, (padding_left, padding_right))
+        x = self.norm2d(x)
+        x = self.prelu(x) # New
+        
+        x = self.segment1d(x) # -> (batch_size, C, S, chunk_size)
+        # x = self.prelu(x) # New
+        # x = self.norm2d(x)
+        x = self.conv2d(x) # New
+        x = self.prelu(x) # New
+        x = self.dptransformer(x)
+
+        x = self.prelu(x) # New
+        x = self.iconv2d(x)# New 
+
+        x = self.overlap_add1d(x)
+        x = F.pad(x, (-padding_left, -padding_right))
+        # x = self.prelu(x) # -> (batch_size, C, n_frames)
+        x = self.map(x) # -> (batch_size, n_sources*C, n_frames)
+        x = x.view(batch_size*n_sources, num_features, n_frames) # -> (batch_size*n_sources, num_features, n_frames)
+        x = self.gtu(x) # -> (batch_size*n_sources, num_features, n_frames)
+        x = self.mask_nonlinear(x) # -> (batch_size*n_sources, num_features, n_frames)
+        output = x.view(batch_size, n_sources, num_features, n_frames)
+        
+        return output
+
 class Separator(nn.Module):
     def __init__(
         self,
@@ -285,7 +395,7 @@ class Separator(nn.Module):
         x = self.map(x) # -> (batch_size, n_sources*C, n_frames)
         x = x.view(batch_size*n_sources, num_features, n_frames) # -> (batch_size*n_sources, num_features, n_frames)
         x = self.gtu(x) # -> (batch_size*n_sources, num_features, n_frames)
-        x = self.mask_nonlinear(x) # -> (batch_size*n_sources, num_features, n_frames)
+        x = self.mask_nonlinear(x).clamp(min=0) # -> (batch_size*n_sources, num_features, n_frames)
         output = x.view(batch_size, n_sources, num_features, n_frames)
         
         return output

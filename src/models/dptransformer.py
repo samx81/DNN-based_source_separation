@@ -52,7 +52,6 @@ class DualPathTransformerBlock(nn.Module):
             output (batch_size, num_features, S, chunk_size)
         """
         x = self.intra_chunk_block(input)
-        print(x.shape)
         output = self.inter_chunk_block(x)
         
         return output
@@ -133,9 +132,7 @@ class ImprovedTransformer(nn.Module):
         Returns:
             output (T, batch_size, num_features)
         """
-        print(input.shape)
         x = self.multihead_attn_block(input)
-        print(x.shape)
         output = self.subnet(x)
         
         return output

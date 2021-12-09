@@ -9,7 +9,7 @@ from utils.utils_tasnet import choose_layer_norm
 from models.gtu import GTU1d
 from models.transform import Segment1d, OverlapAdd1d
 from models.galr import GALR
-from dccrn import DCCRN_Encoder,DCCRN_Decoder, DCTCN_Encoder, DCTCN_Decoder,Naked_Encoder, Naked_Decoder
+from dccrn import DCCRN_Encoder,DCCRN_Decoder, DCTCN_Encoder, DCTCN_Decoder,Naked_Encoder, Naked_Decoder, FiLM_Encoder
 
 EPS=1e-12
 
@@ -88,18 +88,23 @@ class GALRNet(nn.Module):
         elif 'DCT' in [enc_basis, dec_basis]:
             # self.n_basis = n_basis = 8192
             encoder, decoder = Naked_Encoder(feat_type='dct',causal=causal), Naked_Decoder(feat_type='dct')
+        elif 'FiLM_DCT' in [enc_basis, dec_basis]:
+            # self.n_basis = n_basis = 8192
+            encoder, decoder = FiLM_Encoder(), Naked_Decoder(feat_type='dct')
         elif 'TENET' in [enc_basis, dec_basis]:
             # self.n_basis = n_basis = 8192
             encoder, decoder = Naked_Encoder(feat_type='TENET',causal=causal), Naked_Decoder(feat_type='TENET')
         else:
             encoder, decoder = choose_filterbank(n_basis, kernel_size=kernel_size, stride=stride, enc_basis=enc_basis, dec_basis=dec_basis, **kwargs)
         
-        conv = kwargs.get('conv', None)
+        self.conv = conv = kwargs.get('conv', None)
+        self.handcraft = kwargs.get('handcraft', None)
         self.local_att = kwargs.get('local_att', None)
+        self.intra_dropout = kwargs.get('intra_dropout', None)
         print(kwargs)
 
         self.encoder = encoder
-        if enc_basis in ['TorchSTFT', 'TENET', 'DCT']:
+        if self.handcraft and enc_basis in ['TorchSTFT', 'TENET', 'DCT', 'FiLM_DCT']:
             self.separator = Separator_HC(
                 n_basis, hidden_channels=sep_hidden_channels,
                 chunk_size=sep_chunk_size, hop_size=sep_hop_size, down_chunk_size=sep_down_chunk_size, num_blocks=sep_num_blocks,
@@ -107,7 +112,7 @@ class GALRNet(nn.Module):
                 low_dimension=low_dimension,
                 causal=causal,
                 n_sources=n_sources,
-                eps=eps, conv=conv, local_att=self.local_att
+                eps=eps, conv=conv, local_att=self.local_att, intra_dropout=self.intra_dropout
             )
         else:
             self.separator = Separator(
@@ -117,7 +122,7 @@ class GALRNet(nn.Module):
                 low_dimension=low_dimension,
                 causal=causal,
                 n_sources=n_sources,
-                eps=eps, conv=conv,local_att=self.local_att
+                eps=eps, conv=conv,local_att=self.local_att, intra_dropout=self.intra_dropout
             )
         self.decoder = decoder
         
@@ -151,7 +156,7 @@ class GALRNet(nn.Module):
         
         assert C_in == 1, "input.size() is expected (?, 1, ?), but given {}".format(input.size())
         ## TODO: 改這邊的 kernel size 讓輸出有對準
-        if self.enc_basis in ['DCCRN', 'DCTCN', 'TorchSTFT', 'TENET', 'DCT']:
+        if self.enc_basis in ['DCCRN', 'DCTCN', 'TorchSTFT', 'TENET', 'DCT', 'FiLM_DCT']:
             padding = (100 - (T - 400) % 100) % 100
         else:
             padding = (stride - (T - kernel_size) % stride) % stride
@@ -159,13 +164,20 @@ class GALRNet(nn.Module):
         padding_left = padding // 2
         padding_right = padding - padding_left
         input = F.pad(input, (padding_left, padding_right))
-        w = self.encoder(input)
+        if self.enc_basis == 'FiLM_DCT':
+            w, dct = self.encoder(input)
+        else:
+            w = self.encoder(input)
         # print(w.shape)
         if torch.is_complex(w):
             amplitude, phase = torch.abs(w), torch.angle(w)
             mask = self.separator(amplitude)
             amplitude, phase = amplitude.unsqueeze(dim=1), phase.unsqueeze(dim=1)
             w_hat = amplitude * mask * torch.exp(1j * phase)
+        elif self.enc_basis == 'FiLM_DCT':
+            mask = self.separator(w)
+            dct = dct.unsqueeze(dim=1)
+            w_hat = dct * mask
         else:
             mask = self.separator(w)
             w = w.unsqueeze(dim=1)
@@ -208,7 +220,10 @@ class GALRNet(nn.Module):
             'causal': self.causal,
             'n_sources': self.n_sources,
             'eps': self.eps,
-            'local_att': self.local_att
+            'conv': self.conv,
+            'handcraft': self.handcraft,
+            'local_att': self.local_att,
+            'intra_dropout': self.intra_dropout
         }
     
         return config
@@ -238,6 +253,8 @@ class GALRNet(nn.Module):
         low_dimension = config['low_dimension']
         
         eps = config['eps']
+        handcraft = config.get('handcraft', False)
+        intra_dropout = config.get('intra_dropout', False)
         local_att = config.get('local_att', False)
         
         model = cls(
@@ -248,9 +265,9 @@ class GALRNet(nn.Module):
             sep_num_heads=sep_num_heads, sep_norm=sep_norm, sep_dropout=sep_dropout,
             mask_nonlinear=mask_nonlinear,
             causal=causal,
-            n_sources=n_sources,
+            n_sources=n_sources, handcraft=handcraft,
             low_dimension=low_dimension,
-            eps=eps, local_att=local_att
+            eps=eps, local_att=local_att,intra_dropout=intra_dropout
         )
         
         return model
@@ -275,7 +292,7 @@ class Separator(nn.Module):
         n_sources=2,
         eps=EPS,
         conv=False,
-        local_att=False
+        local_att=False, intra_dropout=False
     ):
         super().__init__()
         
@@ -298,7 +315,7 @@ class Separator(nn.Module):
                 low_dimension=low_dimension,
                 causal=causal,
                 eps=eps,
-                conv=conv,local_att=local_att
+                conv=conv,local_att=local_att, intra_dropout=intra_dropout
             )
         else:
             self.galr = GALR(
@@ -308,7 +325,7 @@ class Separator(nn.Module):
                 low_dimension=low_dimension,
                 causal=causal,
                 eps=eps,
-                conv=conv,local_att=local_att
+                conv=conv,local_att=local_att, intra_dropout=intra_dropout
             )
         self.overlap_add1d = OverlapAdd1d(chunk_size, hop_size)
         self.prelu = nn.PReLU()
@@ -342,6 +359,7 @@ class Separator(nn.Module):
         padding_right = padding - padding_left
         x = F.pad(input, (padding_left, padding_right))
         x = self.segment1d(x) # -> (batch_size, C, S, chunk_size)
+        # print(x.shape)
         x = self.norm2d(x)
         x = self.galr(x)
         x = self.overlap_add1d(x)
@@ -366,7 +384,7 @@ class Separator_HC(nn.Module):
         n_sources=2,
         eps=EPS,
         conv=False,
-        local_att=False
+        local_att=False, intra_dropout=False
     ):
         super().__init__()
         
@@ -378,6 +396,8 @@ class Separator_HC(nn.Module):
         self.iconv2d = nn.Conv2d(hidden_channels // 2, num_features, 1,1) 
         norm_name = 'cLN' if causal else 'gLN'
         self.norm2d = choose_layer_norm(norm_name, num_features, causal=causal, eps=eps)
+
+        intra_dropout = True
 
         if low_dimension:
             # If low-dimension representation, latent_dim and chunk_size are required
@@ -391,7 +411,7 @@ class Separator_HC(nn.Module):
                 low_dimension=low_dimension,
                 causal=causal,
                 eps=eps,
-                conv=conv,local_att=local_att
+                conv=conv,local_att=local_att, intra_dropout=intra_dropout
             )
         else:
             self.galr = GALR(
@@ -401,7 +421,7 @@ class Separator_HC(nn.Module):
                 low_dimension=low_dimension,
                 causal=causal,
                 eps=eps,
-                conv=conv,local_att=local_att
+                conv=conv,local_att=local_att, intra_dropout=intra_dropout
             )
         self.overlap_add1d = OverlapAdd1d(chunk_size, hop_size)
         self.prelu = nn.PReLU()

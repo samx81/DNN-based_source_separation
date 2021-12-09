@@ -81,8 +81,11 @@ class GALRBlock(nn.Module):
     def __init__(self, num_features, hidden_channels, name=None, random_mask=False, num_heads=8, causal=False, norm=True, dropout=0.1, low_dimension=True, eps=EPS, **kwargs):
         super().__init__()
         
-        self.intra_chunk_block = LocallyRecurrentBlock(num_features, hidden_channels=hidden_channels, norm=norm, eps=eps)
-
+        if kwargs.get('intra_dropout', None):
+            self.intra_chunk_block = CustomLocallyRecurrentBlock(num_features, hidden_channels=hidden_channels, norm=norm, eps=eps, dropout=dropout)
+        else:
+            self.intra_chunk_block = LocallyRecurrentBlock(num_features, hidden_channels=hidden_channels, norm=norm, eps=eps)
+        
         if kwargs.get('local_att', None):
             self.intra_chunk_att = LocallyAttentiveBlock(num_features, num_heads=num_heads, causal=causal, norm=norm, dropout=dropout, eps=eps)
         else:
@@ -149,6 +152,56 @@ class GALRBlock_Conv(nn.Module):
         
         output = self.conv2d(output)
 
+        return output
+
+class CustomLocallyRecurrentBlock(nn.Module):
+    def __init__(self, num_features, hidden_channels, norm=True, eps=EPS, dropout=0.1):
+        super().__init__()
+        
+        self.num_features, self.hidden_channels = num_features, hidden_channels
+        num_directions = 2 # bi-direction
+        self.norm = norm
+        
+        self.rnn = nn.LSTM(num_features, hidden_channels, batch_first=True, bidirectional=True)
+        self.fc = nn.Linear(num_directions*hidden_channels, num_features)
+
+        self.dropout = nn.Dropout(dropout) if dropout else None
+
+        if self.norm:
+            self.norm1d = choose_layer_norm('gLN' ,num_features, causal=False, eps=eps)
+        
+    def forward(self, input):
+        """
+        Args:
+            input (batch_size, num_features, S, chunk_size)
+        Returns:
+            output (batch_size, num_features, S, chunk_size)
+        """
+        num_features, hidden_channels = self.num_features, self.hidden_channels
+        batch_size, _, S, chunk_size = input.size()
+
+        self.rnn.flatten_parameters()
+        
+        residual = input # (batch_size, num_features, S, chunk_size)
+        x = input.permute(0, 2, 3, 1).contiguous() # -> (batch_size, S, chunk_size, num_features)
+        x = x.view(batch_size*S, chunk_size, num_features)
+        x, (_, _) = self.rnn(x) # (batch_size*S, chunk_size, num_features) -> (batch_size*S, chunk_size, num_directions*hidden_channels)
+        
+        if self.dropout:
+            x = self.dropout(x)
+        
+        x = self.fc(x) # -> (batch_size*S, chunk_size, num_features)
+        x = x.view(batch_size, S*chunk_size, num_features) # (batch_size, S*chunk_size, num_features)
+        x = x.permute(0, 2, 1).contiguous() # -> (batch_size, num_features, S*chunk_size)
+        if self.norm:
+            x = self.norm1d(x) # (batch_size, num_features, S*chunk_size)
+        x = x.view(batch_size, num_features, S, chunk_size) # -> (batch_size, num_features, S, chunk_size)
+        
+        if self.dropout:
+            x = self.dropout(x)
+        
+        output = x + residual
+        
         return output
 
 class GloballyAttentiveBlockBase(nn.Module):

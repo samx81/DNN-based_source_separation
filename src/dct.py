@@ -92,9 +92,9 @@ def isdct_torch(dcts, *, window_length, frame_step, frame_length=None, window=to
     # if callable(window):
     #     window = window(frame_length2).to(signals)
     if callable(window):
-        window = window(window_length).to(signals)
-        paddings = (frame_length2 - window_length) // 2
-        window = F.pad(window, (paddings, paddings))
+        window = window(window_length)
+        # paddings = (frame_length2 - window_length) // 2
+        # window = F.pad(window, (paddings, paddings))
 
     # if window is not None:
     #     window_frames = window[:, None].expand(-1, n_frames)
@@ -103,15 +103,15 @@ def isdct_torch(dcts, *, window_length, frame_step, frame_length=None, window=to
 
     if window is not None:
         window_sum = window_sumsquare(
-            window, n_frames, hop_length=frame_step,
-            win_length=window_length, n_fft=n_fft,,
+            window.numpy(), n_frames, hop_length=frame_step,
+            win_length=window_length, n_fft=frame_length2,
             dtype=np.float32)
             
         # remove modulation effects
         approx_nonzero_indices = torch.from_numpy(
             np.where(window_sum > util.tiny(window_sum))[0])
         window_sum = torch.from_numpy(window_sum).cuda()
-        signals[:, :, approx_nonzero_indices] /= window_sum[approx_nonzero_indices]
+        signals[..., approx_nonzero_indices] /= window_sum[approx_nonzero_indices]
         
     if center:
         pad = int(frame_length2 // 2)
