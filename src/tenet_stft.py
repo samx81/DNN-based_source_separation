@@ -6,11 +6,13 @@ from torch.autograd import Variable
 import numpy as np
 
 class STFT(nn.Module):
-    def __init__(self, fftsize, window_size, stride, win_type="default", trainable=False, online=False):
+    def __init__(self, fftsize, window_size, stride, win_type="default", trainable=False, online=False, center=False):
         super(STFT, self).__init__()
         self.fftsize = fftsize
         self.window_size = window_size
         self.stride = stride
+
+        self.center = center
 
         if win_type=="default": # sin window
             self.window_func = np.sqrt(np.hanning(self.window_size))
@@ -69,6 +71,13 @@ class STFT(nn.Module):
         stft_stride = self.stride
         stft_window_size = self.window_size
         stft_fftsize = self.fftsize
+
+        if self.center:
+            input_dim = input.dim()
+            extended_shape = [1] * (3 - input_dim) + list(input.size())
+            pad = int((stft_window_size) // 2)
+            input = F.pad(input.view(extended_shape), [pad, pad], 'reflect')
+            input = input.view(input.shape[-input_dim:])
 
         spec_r = self.encoder_r(input)
         spec_i = self.encoder_i(input)

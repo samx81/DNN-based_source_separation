@@ -82,8 +82,10 @@ class GALRBlock(nn.Module):
         super().__init__()
         
         if kwargs.get('intra_dropout', None):
+            print("nooo",kwargs.get('intra_dropout', None))
             self.intra_chunk_block = CustomLocallyRecurrentBlock(num_features, hidden_channels=hidden_channels, norm=norm, eps=eps, dropout=dropout)
         else:
+            print('NO',kwargs.get('intra_dropout', None))
             self.intra_chunk_block = LocallyRecurrentBlock(num_features, hidden_channels=hidden_channels, norm=norm, eps=eps)
         
         if kwargs.get('local_att', None):
@@ -281,6 +283,7 @@ class GloballyAttentiveBlock(GloballyAttentiveBlockBase):
         x_with_encoding = x.clone()
 
         x = x.permute(2,0,3,1).contiguous() # -> (S, batch_size, K, num_features)
+        # Torch MHA : (sequence_len, batch_size, features)
         x = x.view(S, batch_size*K, num_features) # -> (S, batch_size*K, num_features)
 
         residual = x # (S, batch_size*K, num_features)
@@ -354,6 +357,7 @@ class LowDimensionGloballyAttentiveBlock(GloballyAttentiveBlockBase):
         # x_masked = x.clone()
 
         x = self.fc_map(x) # (batch_size, num_features, S, K) -> (batch_size, num_features, S, Q)
+        # K == Timestep
 
         if self.norm:
             x = self.norm2d_in(x) # -> (batch_size, num_features, S, Q)
@@ -367,6 +371,9 @@ class LowDimensionGloballyAttentiveBlock(GloballyAttentiveBlockBase):
 
         x = x.permute(2,0,3,1).contiguous() # -> (S, batch_size, Q, num_features)
         x = x.view(S, batch_size*Q, num_features) # -> (S, batch_size*Q, num_features)
+
+        # 每個 batch 是獨立的 => 目標是為了對每個 segment 的各個 timestep 做組合
+        # batch 跟 timestep 都可以獨立，因為想看的是整個場域的 segment 關聯
 
         residual = x # (S, batch_size*Q, num_features)
         x, _ = self.multihead_attn(x, x, x) # (T_tgt, batch_size, num_features), (batch_size, T_tgt, T_src), where T_tgt = T_src = T

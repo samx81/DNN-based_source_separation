@@ -14,6 +14,8 @@ from tqdm import tqdm
 from pesq import pesq as pypesq
 from utils.utils import draw_loss_curve
 from criterion.pit import pit
+from criterion.distance import L2Loss
+from criterion.stft_loss import CombineSISNRLoss
 
 BITS_PER_SAMPLE_WSJ0 = 16
 MIN_PESQ = -0.5
@@ -106,6 +108,7 @@ class TrainerBase:
         os.makedirs(self.sample_dir, exist_ok=True)
         
         self.epochs = args.epochs
+        self.criterion_str = args.criterion
 
         self.noise_loss = args.noise_loss
         print(f'train with noise:{self.noise_loss}')
@@ -218,9 +221,19 @@ class TrainerBase:
                 mixture = mixture.cuda()
                 sources = sources.cuda()
 
-            estimated_sources, _, = self.model(mixture)
+            estimated_sources, latent = self.model(mixture)
 
-            loss = self.criterion(estimated_sources[:,0], sources[:,0])
+            if L2Loss == self.criterion:
+                with torch.no_grad():
+                    gt = self.model.module.encoder(sources)
+                loss = self.criterion(latent[:,0], gt)
+            elif 'l2_sisnr' == self.criterion_str:
+                with torch.no_grad():
+                    
+                    gt = self.model.module.encoder(sources)
+                loss = self.criterion(estimated_sources[:,0], sources[:,0], latent[:,0], gt)
+            else:
+                loss = self.criterion(estimated_sources[:,0], sources[:,0])
             
             if self.noise_loss:
                 loss += self.criterion(estimated_sources[:,1], sources[:,1])
@@ -262,10 +275,22 @@ class TrainerBase:
                 if self.use_cuda:
                     mixture = mixture.cuda()
                     sources = sources.cuda()
-                output, _, = self.model(mixture)
+                output, latent = self.model(mixture)
                 
                 #  loss = self.criterion(output[:,0], torch.squeeze(sources,0))
-                loss = self.criterion(output[:,0], sources[:,0])
+                if 'l2_sisnr' == self.criterion_str:
+                    with torch.no_grad():
+                        T = sources.size()[-1]
+                        if self.model.module.enc_basis in ['DCCRN', 'DCTCN', 'TorchSTFT', 'TENET', 'DCT', 'FiLM_DCT']:
+                            padding = (100 - (T - 400) % 100) % 100
+                        else:
+                            padding = (stride - (T - kernel_size) % stride) % stride
+                        padding_left = padding // 2
+                        padding_right = padding - padding_left
+                        gt = self.model.module.encoder(nn.functional.pad(sources, (padding_left, padding_right)))
+                    loss = self.criterion(output[:,0], sources[:,0], latent[:,0], gt)
+                else:
+                    loss = self.criterion(output[:,0], sources[:,0])
 
                 # loss = loss.sum(dim=0)
                 valid_loss += loss.item()

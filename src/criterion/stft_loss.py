@@ -15,6 +15,7 @@ import torch.nn.functional as F
 import torch.nn as nn
 from models.complex import STFT
 from criterion.pfp_loss import PerceptualLoss, PerceptualLoss_Hubert
+from criterion.sdr import NegSISDR
 
 def stft(x, fft_size, hop_size, win_length, window):
     """Perform STFT and convert to magnitude spectrogram.
@@ -269,6 +270,60 @@ class CombinePFPLoss(torch.nn.Module):
         """
         loss = self.loss(x, y)
         loss += self.weight * self.pfp_loss(x,y)
+
+
+        return loss
+
+class CombineSISNRLoss(torch.nn.Module):
+    """DEMUCS loss module."""
+
+    def __init__(self, loss, weight=0.5):
+        """Initialize STFT loss module."""
+        super(CombineSISNRLoss, self).__init__()
+        self.loss = loss
+        self.weight = weight
+        
+        self.snr_loss = NegSISDR()
+
+    def forward(self, x, y, latent_x, latent_y):
+        """Calculate forward propagation.
+        Args:
+            x (Tensor): Predicted signal (B, T). Est
+            y (Tensor): Groundtruth signal (B, T). Clean
+        Returns:
+            Tensor: Spectral convergence loss value.
+            Tensor: Log STFT magnitude loss value.
+        """
+        loss = (1 - self.weight) * self.snr_loss(x, y)
+        t_loss =self.loss(latent_x , latent_y)
+        loss += self.weight * t_loss
+
+
+        return loss
+
+class T_TF_Loss(torch.nn.Module):
+    """DEMUCS loss module."""
+
+    def __init__(self, loss, weight=0.2):
+        """Initialize STFT loss module."""
+        super(T_TF_Loss, self).__init__()
+        self.loss = nn.MSELoss()
+        self.weight = weight
+        
+        # self.snr_loss = NegSISDR()
+
+    def forward(self, x, y, latent_x, latent_y):
+        """Calculate forward propagation.
+        Args:
+            x (Tensor): Predicted signal (B, T). Est
+            y (Tensor): Groundtruth signal (B, T). Clean
+        Returns:
+            Tensor: Spectral convergence loss value.
+            Tensor: Log STFT magnitude loss value.
+        """
+        loss = (1 - self.weight) * self.loss(x, y)
+        tf_loss = self.loss(latent_x , latent_y)
+        loss += self.weight * tf_loss
 
 
         return loss

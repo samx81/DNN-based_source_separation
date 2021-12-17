@@ -110,7 +110,7 @@ def isdct_torch(dcts, *, window_length, frame_step, frame_length=None, window=to
         # remove modulation effects
         approx_nonzero_indices = torch.from_numpy(
             np.where(window_sum > util.tiny(window_sum))[0])
-        window_sum = torch.from_numpy(window_sum).cuda()
+        window_sum = torch.from_numpy(window_sum).to(dcts.device)
         signals[..., approx_nonzero_indices] /= window_sum[approx_nonzero_indices]
         
     if center:

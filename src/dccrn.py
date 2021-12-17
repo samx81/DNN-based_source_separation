@@ -7,7 +7,7 @@ from complexnn import ComplexConv2d, ComplexConvTranspose2d, ComplexBatchNorm
 from models.tcn import TemporalConvNet
 from models.film import FiLM2d
 from utils.utils_tasnet import choose_layer_norm
-import dct
+import dct, dense_dilated
 
 EPS = 1e-12
 
@@ -615,3 +615,141 @@ class FiLM_Decoder(nn.Module):
             out_wav = self.inv_transform(out, self.fft_len, self.win_inc, self.win_len, self.window)
         # out_wav = out_wav.view(batch_size, S, -1)
         return out_wav
+
+class Deep_Encoder(nn.Module):
+    def __init__(self, win_len=400, win_inc=100, fft_len=512, 
+                        win_type='hanning',feat_type='fft', channel=8, causal=True, eps=EPS):
+
+        super(Deep_Encoder, self).__init__() 
+
+        self.win_len = win_len
+        self.win_inc = win_inc
+        self.fft_len = fft_len
+        self.feat_type = feat_type
+
+        if feat_type == 'fft':
+            
+            self.transform = torch.stft
+            norm_name = 'cLN' if causal else 'gLN'
+
+            self.bottleneck_conv1d = nn.Conv1d(fft_len + 2, fft_len, kernel_size=1)
+            self.norm2d = choose_layer_norm(norm_name, fft_len, causal=causal, eps=eps)
+            self.prelu = nn.PReLU(fft_len)
+        elif feat_type == 'dct':
+
+            self.transform = dct.sdct_torch
+            self.prelu = nn.PReLU(fft_len)
+        elif feat_type == 'TENET':
+
+            self.transform = STFT(fft_len, win_len, win_inc, win_type=win_type)
+        
+        # TODO: let window tensor can be auto convert to fft length
+        if win_type == 'hanning':
+            if feat_type == 'dct':
+                self.window = torch.hann_window
+            else:
+                self.window = torch.hann_window(win_len).cuda()
+
+        self.conv2d = nn.Conv2d(1, channel, 1,1)
+        self.dilated = dense_dilated.DenseBlock(512, 8)
+    def forward(self, inputs):
+        # when inference, only one utt
+        if inputs.dim() == 1:
+            inputs = torch.unsqueeze(inputs, 0)
+        elif inputs.dim() == 3:
+            inputs = inputs.view(-1, inputs.shape[-1])
+
+        if self.feat_type == 'TENET':
+            out = self.transform(inputs)
+        elif self.feat_type == 'dct':
+            out = self.transform(inputs, self.fft_len, self.win_len, self.win_inc, window=self.window)
+            out = self.prelu(out).unsqueeze(1) # (batch_size, 1, freq, time)
+            out = self.conv2d(out).transpose(-1,-2) # (bs, 8 , freq, time), (bs, 8, time, freq)
+            out = self.dilated(out).permute(0, 3, 1, 2) # (bs, freq, channel, time)
+        else:
+            # onesided
+            specs = self.transform(inputs, self.fft_len, self.win_inc, self.win_len, self.window)
+        
+            # => (batch_size, fft // 2 + 1, timestep, 2)
+
+            out = specs.transpose(-1, -2) # => (batch_size, (fft // 2 + 1), 2, timestep)
+            bs, _,_, T = out.size()
+            out = specs.contiguous().view(bs, -1, T) # => (batch_size, fft + 2 , timestep)
+            out = self.bottleneck_conv1d(out) # => (batch_size, fft, timestep)
+            out = self.norm2d(out) # => (batch_size, fft, timestep)
+            out = self.prelu(out)
+        # batch_size, channels, dims, lengths = out.size()
+
+        return out
+
+class Deep_Decoder(nn.Module):
+    def __init__(self, 
+                win_len=400,
+                win_inc=100, 
+                fft_len=512,
+                channel=8,
+                win_type='hanning',
+                feat_type='fft'):
+
+        super(Deep_Decoder, self).__init__() 
+
+        self.win_len = win_len
+        self.win_inc = win_inc
+        self.fft_len = fft_len
+        self.feat_type = feat_type 
+        # self.transform = ISTFT(fft_len, win_len, win_inc, win_type=win_type)
+        if feat_type == 'fft':
+            self.inv_transform = torch.istft
+            self.prelu = nn.PReLU(fft_len + 2)
+            self.bottleneck_conv1d = nn.Conv1d(fft_len, fft_len + 2, kernel_size=1)
+            # self.norm2d = choose_layer_norm(norm_name, fft_len, causal=causal, eps=eps)
+        elif feat_type == 'dct':
+            self.inv_transform = dct.isdct_torch
+        elif feat_type == 'TENET':
+            # pass
+            self.inv_transform = ISTFT(fft_len, win_len, win_inc, win_type=win_type)
+
+        # TODO: let window tensor can be auto convert to fft length
+        if win_type == 'hanning':
+            if feat_type == 'dct':
+                self.window = torch.hann_window
+            else:
+                self.window = torch.hann_window(win_len).cuda()
+
+        self.iconv2d = nn.Conv2d(channel, 1, 1, 1)
+        self.dilated = dense_dilated.DenseBlock(512, 8)
+
+    def forward(self, inputs):
+        # when inference, only one utt
+        # if inputs.dim() == 4:
+        if self.feat_type == 'TENET':
+            out_wav = self.inv_transform(inputs)
+        elif self.feat_type == 'dct':
+            out = inputs.permute(0,2,3,1)
+            out = self.dilated(out)
+            out = self.iconv2d(out).squeeze(1).transpose(-1, -2)
+            print(out.shape)
+            out_wav = self.inv_transform(out, window_length=self.win_len, frame_step=self.win_inc, window=self.window)
+        else:
+            out = self.bottleneck_conv1d(inputs)
+            out = self.prelu(out)
+            bsxS, feat, time = out.shape
+            out = out.view(bsxS, feat//2, 2, time)
+            out = out.transpose(-1,-2)
+
+            # batchsize, dims, length
+            
+            out_wav = self.inv_transform(out, self.fft_len, self.win_inc, self.win_len, self.window)
+        # out_wav = out_wav.view(batch_size, S, -1)
+        return out_wav
+
+if __name__ == "__main__":
+    encoder = Deep_Encoder(feat_type='dct',causal=False)
+    decoder = Deep_Decoder(feat_type='dct')
+    x = torch.rand(2, 64000)
+    x = encoder(x)
+    print(x.shape)
+
+    
+    x = decoder(x)
+    print(x.shape)

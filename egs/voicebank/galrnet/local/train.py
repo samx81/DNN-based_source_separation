@@ -8,10 +8,12 @@ import torch.nn as nn
 
 from utils.utils import set_seed
 from dataset import WaveTrainDataset, WaveEvalDataset, TrainDataLoader, EvalDataLoader
+from new_dataset import WaveTrainDataset as NewTrainDataset
 from adhoc_driver import AdhocTrainer
 from models.galrnet import GALRNet
 from criterion.sdr import NegSISDR, ThresholdedSNR
-from criterion.stft_loss import DEMUCSLoss, MagMSELoss, CombinePFPLoss
+from criterion.stft_loss import DEMUCSLoss, MagMSELoss, CombinePFPLoss, CombineSISNRLoss
+from criterion.distance import L2Loss
 from driver import MyNegSISNR
 from criterion.pit import PIT1d
 
@@ -25,8 +27,8 @@ parser.add_argument('--sr', type=int, default=10, help='Sampling rate')
 parser.add_argument('--duration', type=float, default=2, help='Duration')
 parser.add_argument('--conv', default=False, action='store_true')
 parser.add_argument('--valid_duration', type=float, default=4, help='Duration for valid dataset for avoiding memory error.')
-parser.add_argument('--enc_basis', type=str, default='trainable', choices=['FiLM_DCT', 'DCT','TENET','TorchSTFT','DCCRN','DCTCN','trainable','Fourier','trainableFourier','trainableFourierTrainablePhase'], help='Encoder type')
-parser.add_argument('--dec_basis', type=str, default='trainable', choices=['FiLM_DCT','DCT','TENET','TorchSTFT','DCCRN','DCTCN','trainable','Fourier','trainableFourier','trainableFourierTrainablePhase', 'pinv'], help='Decoder type')
+parser.add_argument('--enc_basis', type=str, default='trainable', choices=['Deep_DCT', 'FiLM_DCT', 'DCT','TENET','TorchSTFT','DCCRN','DCTCN','trainable','Fourier','trainableFourier','trainableFourierTrainablePhase'], help='Encoder type')
+parser.add_argument('--dec_basis', type=str, default='trainable', choices=['Deep_DCT','FiLM_DCT','DCT','TENET','TorchSTFT','DCCRN','DCTCN','trainable','Fourier','trainableFourier','trainableFourierTrainablePhase', 'pinv'], help='Decoder type')
 parser.add_argument('--no-low-dim', dest='low_dim', action='store_false')
 parser.add_argument('--noise_loss', default=False, action='store_true')
 parser.add_argument('--local_att', default=False, action='store_true')
@@ -49,7 +51,7 @@ parser.add_argument('--sep_dropout', type=float, default=0.1, help='Dropout rate
 parser.add_argument('--mask_nonlinear', type=str, default='sigmoid', help='Non-linear function of mask estiamtion')
 parser.add_argument('--causal', type=int, default=0, help='Causality')
 parser.add_argument('--n_sources', type=int, default=None, help='# speakers')
-parser.add_argument('--criterion', type=str, default='sisdr', choices=['pfp_sisnr','pfp_l2','pfp_thsnr','sisdr', 'this_sisdr', 'threshold_snr','demucs_l1','demucs_mse','mse'], help='Criterion')
+parser.add_argument('--criterion', type=str, default='sisdr', choices=['l2_sisnr','l2loss','pfp_sisnr','pfp_l2','pfp_thsnr','sisdr', 'this_sisdr', 'threshold_snr','demucs_l1','demucs_mse','mse'], help='Criterion')
 parser.add_argument('--optimizer', type=str, default='adam', choices=['sgd', 'adam', 'rmsprop'], help='Optimizer, [sgd, adam, rmsprop]')
 parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate. Default: 1e-3')
 parser.add_argument('--weight_decay', type=float, default=0, help='Weight decay (L2 penalty). Default: 0')
@@ -64,8 +66,9 @@ parser.add_argument('--use_cuda', type=int, default=1, help='0: Not use cuda, 1:
 parser.add_argument('--overwrite', type=int, default=0, help='0: NOT overwrite, 1: FORCE overwrite')
 parser.add_argument('--seed', type=int, default=42, help='Random seed')
 parser.add_argument('--worker', type=int, default=16, help='Random seed')
-parser.add_argument('--handcraft', default=False, action='store_true')
+parser.add_argument('--handcraft', type=int)
 parser.add_argument('--intra_dropout', default=False, action='store_true')
+parser.add_argument('--new_dset', default=False, action='store_true')
 def main(args):
     set_seed(args.seed)
     
@@ -73,7 +76,11 @@ def main(args):
     overlap = samples//2
     max_samples = int(args.sr * args.valid_duration)
     
-    train_dataset = WaveTrainDataset(args.train_wav_root, args.train_list_path, samples=samples, overlap=overlap, n_sources=args.n_sources,noise_loss=args.noise_loss,use_h5py=True)
+    if args.new_dset:
+        train_dataset = NewTrainDataset(args.train_wav_root, args.train_list_path, samples=samples, overlap=overlap, n_sources=args.n_sources,noise_loss=args.noise_loss,use_h5py=True)
+    else:
+        train_dataset = WaveTrainDataset(args.train_wav_root, args.train_list_path, samples=samples, overlap=overlap, n_sources=args.n_sources,noise_loss=args.noise_loss,use_h5py=True)
+    
     valid_dataset = WaveEvalDataset(args.valid_wav_root, args.valid_list_path, max_samples=max_samples, n_sources=args.n_sources)
     print("Training dataset includes {} samples.".format(len(train_dataset)))
     print("Valid dataset includes {} samples.".format(len(valid_dataset)))
@@ -138,6 +145,11 @@ def main(args):
         criterion = DEMUCSLoss('l2')
     elif args.criterion == 'mse':
         criterion = MagMSELoss()
+    elif args.criterion == 'l2loss':
+        criterion = L2Loss()
+    elif args.criterion == 'l2_sisnr':
+        criterion = nn.MSELoss()
+        criterion = CombineSISNRLoss(criterion, 0.7)
     elif args.criterion == 'pfp_sisnr':
         criterion = MyNegSISNR()
         criterion = CombinePFPLoss(criterion, 2000)

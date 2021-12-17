@@ -68,8 +68,8 @@ def package_into_h5(wav_root='data/voicebank/tr', sr=16000, noise=False):
     # Create dataset
     id_dset = h5_file.create_dataset("id", (num_audios,), dtype=dt)
     len_dset = h5_file.create_dataset("len", (num_audios, ), dtype='i')
-    clean_dset = h5_file.create_dataset("clean", (num_audios, max_audio_length), dtype='f', compression="gzip", fillvalue=False)
-    noisy_dset = h5_file.create_dataset("noisy", (num_audios, max_audio_length), dtype='f', compression="gzip", fillvalue=False)
+    clean_dset = h5_file.create_dataset("clean", (num_audios, max_audio_length), dtype='f', compression="gzip", fillvalue=0)
+    noisy_dset = h5_file.create_dataset("noisy", (num_audios, max_audio_length), dtype='f', compression="gzip", fillvalue=0)
 
     for idx, id in tqdm(enumerate(noisy_dict.keys()),"Loading Dataset...", total=num_audios):
         T_total = len_dict[id]
@@ -78,11 +78,11 @@ def package_into_h5(wav_root='data/voicebank/tr', sr=16000, noise=False):
 
         wav_path = os.path.join(wav_root, clean_dict[id])
         wave, _ = torchaudio.load(wav_path)
-        clean_dset[idx][:T_total] = wave[0]
+        clean_dset[idx, :T_total] = wave[0]
 
         wav_path = os.path.join(wav_root, noisy_dict[id])
         wave, _ = torchaudio.load(wav_path)
-        noisy_dset[idx][:T_total] = wave[0]
+        noisy_dset[idx, :T_total] = wave[0]
 
 
 # class WaveDataset(WSJ0Dataset):
@@ -293,4 +293,4 @@ def package_into_h5(wav_root='data/voicebank/tr', sr=16000, noise=False):
 #         return len(self.json_data)
 
 if __name__ == '__main__':
-    package_into_h5()
+    package_into_h5(wav_root='data/voicebank/tr')

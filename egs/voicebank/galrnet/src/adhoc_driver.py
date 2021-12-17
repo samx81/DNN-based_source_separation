@@ -57,7 +57,7 @@ class AdhocTrainer(TrainerBase):
                 model_path = os.path.join(self.model_dir, "best.pth")
                 self.save_model(epoch, model_path)
             else:
-                if valid_loss >= self.prev_loss:
+                if valid_loss >= self.best_loss:
                     self.no_improvement += 1
                     if self.no_improvement >= 3:
                         for param_group in self.optimizer.param_groups:
@@ -65,6 +65,7 @@ class AdhocTrainer(TrainerBase):
                             lr = 0.5 * prev_lr
                             print("Learning rate: {} -> {}".format(prev_lr, lr))
                             param_group['lr'] = lr
+                        self.no_improvement = 0
                 else:
                     self.no_improvement = 0
             
