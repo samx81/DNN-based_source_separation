@@ -406,7 +406,7 @@ class Naked_Encoder(nn.Module):
             self.prelu = nn.PReLU(fft_len)
         elif feat_type == 'TENET':
 
-            self.transform = STFT(fft_len, win_len, win_inc, win_type=win_type)
+            self.transform = STFT(fft_len, win_len, win_inc, win_type=win_type,center=True)
         
         # TODO: let window tensor can be auto convert to fft length
         if win_type == 'hanning':

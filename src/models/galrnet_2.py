@@ -76,30 +76,13 @@ class GALRNet(nn.Module):
         self.eps = eps
         
         # Network configuration
-        if 'DCCRN' in [enc_basis, dec_basis]:
-            # encoder, decoder = DCCRN_Encoder(kernel_num=[4, 8, 16, 32, 32, 32], kernel_size=5), DCCRN_Decoder(kernel_num=[4, 8, 16, 32, 32, 32], kernel_size=5)
-            # self.n_basis = n_basis = 128
-            encoder, decoder = DCCRN_Encoder(kernel_num=[8, 16, 32, 64, 64], kernel_size=5), DCCRN_Decoder(kernel_num=[8, 16, 32, 64, 64], kernel_size=5)
-            self.n_basis = n_basis = 512
-            self.sep_hidden_channels = sep_hidden_channels = n_basis // 2
-        elif 'DCTCN' in [enc_basis, dec_basis]:
-            # self.n_basis = n_basis = 8192
-            encoder, decoder = DCTCN_Encoder(causal=causal), DCTCN_Decoder()
-        elif 'TorchSTFT' in [enc_basis, dec_basis]:
+        if 'TorchSTFT' in [enc_basis, dec_basis]:
             # self.n_basis = n_basis = 8192
             encoder, decoder = Naked_Encoder(feat_type='fft',causal=causal), Naked_Decoder(feat_type='fft')
         elif 'DCT' in [enc_basis, dec_basis]:
             # self.n_basis = n_basis = 8192
-            encoder, decoder = Naked_Encoder(feat_type='dct',causal=causal), Naked_Decoder(feat_type='dct')
-        elif 'FiLM_DCT' in [enc_basis, dec_basis]:
-            # self.n_basis = n_basis = 8192
-            encoder, decoder = FiLM_Encoder(), Naked_Decoder(feat_type='dct')
-        elif 'Deep_DCT' in [enc_basis, dec_basis]:
-            # self.n_basis = n_basis = 8192
-            encoder, decoder = Deep_Encoder(feat_type='dct',causal=causal), Deep_Decoder(feat_type='dct')
-        elif 'TENET' in [enc_basis, dec_basis]:
-            # self.n_basis = n_basis = 8192
-            encoder, decoder = Naked_Encoder(feat_type='TENET',causal=causal), Naked_Decoder(feat_type='TENET')
+            encoder1, decoder1 = Naked_Encoder(feat_type='dct',causal=causal), Naked_Decoder(feat_type='dct')
+            encoder2, decoder2 = Naked_Encoder(feat_type='TENET',causal=causal), Naked_Decoder(feat_type='TENET')
         else:
             encoder, decoder = choose_filterbank(n_basis, kernel_size=kernel_size, stride=stride, enc_basis=enc_basis, dec_basis=dec_basis, **kwargs)
         
@@ -109,7 +92,8 @@ class GALRNet(nn.Module):
         self.intra_dropout = kwargs.get('intra_dropout', None)
         print(kwargs)
 
-        self.encoder = encoder
+        self.encoder1 = encoder1
+        self.encoder2 = encoder2
         if self.handcraft is 1 or self.handcraft == True:# and enc_basis in ['TorchSTFT', 'TENET', 'DCT', 'FiLM_DCT']:
             self.separator = Separator_HC( # Separator_HC Separator_NoSegment Separator_NoSegment_HC
                 n_basis, hidden_channels=sep_hidden_channels,
@@ -170,7 +154,7 @@ class GALRNet(nn.Module):
                 n_sources=n_sources,
                 eps=eps, conv=conv,local_att=self.local_att, intra_dropout=self.intra_dropout
             )
-        self.decoder = decoder
+        self.decoder = decoder1
         
         self.num_parameters = self._get_num_parameters()
         
@@ -210,12 +194,10 @@ class GALRNet(nn.Module):
         padding_left = padding // 2
         padding_right = padding - padding_left
         input = F.pad(input, (padding_left, padding_right))
-        if self.enc_basis == 'FiLM_DCT':
-            w, dct = self.encoder(input)
-        else:
-            w = self.encoder(input)
+        w1 = self.encoder1(input)
+        w2 = self.encoder2(input)
         # print(w.shape)
-        if torch.is_complex(w):
+        if torch.is_complex(w1):
             amplitude, phase = torch.abs(w), torch.angle(w)
             mask = self.separator(amplitude)
             amplitude, phase = amplitude.unsqueeze(dim=1), phase.unsqueeze(dim=1)
@@ -225,9 +207,9 @@ class GALRNet(nn.Module):
             dct = dct.unsqueeze(dim=1)
             w_hat = dct * mask
         else:
-            mask = self.separator(w)
-            w = w.unsqueeze(dim=1)
-            w_hat = w * mask
+            mask = self.separator(w1, w2)
+            w1 = w1.unsqueeze(dim=1)
+            w_hat = w1 * mask
 
         # latent = w
         latent = w_hat
@@ -657,10 +639,12 @@ class Separator_NoSegment_HC(nn.Module):
         self.chunk_size, self.hop_size = chunk_size, hop_size
         
         self.segment1d = Segment1d(chunk_size, hop_size)
-        self.conv2d = nn.Conv2d(num_features, hidden_channels // 2, 1,1)
-        self.iconv2d = nn.Conv2d(hidden_channels // 2, num_features, 1,1) 
+        self.conv2d1 = nn.Conv2d(num_features, hidden_channels // 2, 1,1)
+        self.conv2d2 = nn.Conv2d(num_features, hidden_channels // 2, 1,1)
+        self.iconv2d = nn.Conv2d(hidden_channels, num_features, 1,1) 
         norm_name = 'cLN' if causal else 'gLN'
-        self.norm2d = choose_layer_norm(norm_name, num_features, causal=causal, eps=eps)
+        self.norm2d1 = choose_layer_norm(norm_name, num_features, causal=causal, eps=eps)
+        self.norm2d2 = choose_layer_norm(norm_name, num_features, causal=causal, eps=eps)
 
         # intra_dropout = True
 
@@ -668,10 +652,30 @@ class Separator_NoSegment_HC(nn.Module):
             # If low-dimension representation, latent_dim and chunk_size are required
             if down_chunk_size is None:
                 raise ValueError("Specify down_chunk_size")
-            self.galr = GALR(
+            self.galr1 = GALR(
                 hidden_channels // 2, hidden_channels,
                 chunk_size=chunk_size, down_chunk_size=down_chunk_size,
-                num_blocks=num_blocks, num_heads=num_heads,
+                num_blocks=num_blocks//3, num_heads=num_heads,
+                norm=norm, dropout=dropout,
+                low_dimension=low_dimension,
+                causal=causal,
+                eps=eps,
+                conv=conv,local_att=local_att, intra_dropout=intra_dropout
+            )
+            self.galr2 = GALR(
+                hidden_channels // 2, hidden_channels,
+                chunk_size=chunk_size, down_chunk_size=down_chunk_size,
+                num_blocks=num_blocks//3, num_heads=num_heads,
+                norm=norm, dropout=dropout,
+                low_dimension=low_dimension,
+                causal=causal,
+                eps=eps,
+                conv=conv,local_att=local_att, intra_dropout=intra_dropout
+            )
+            self.galr_merge = GALR(
+                hidden_channels // 2, hidden_channels, # TODO: 再改看看有沒有差異
+                chunk_size=chunk_size, down_chunk_size=down_chunk_size,
+                num_blocks=num_blocks//3, num_heads=num_heads,
                 norm=norm, dropout=dropout,
                 low_dimension=low_dimension,
                 causal=causal,
@@ -679,15 +683,45 @@ class Separator_NoSegment_HC(nn.Module):
                 conv=conv,local_att=local_att, intra_dropout=intra_dropout
             )
         else:
-            self.galr = GALR(
+            self.galr1 = GALR(
                 hidden_channels // 2, hidden_channels,
-                num_blocks=num_blocks, num_heads=num_heads,
+                chunk_size=chunk_size, down_chunk_size=down_chunk_size,
+                num_blocks=num_blocks//3, num_heads=num_heads,
                 norm=norm, dropout=dropout,
                 low_dimension=low_dimension,
                 causal=causal,
                 eps=eps,
                 conv=conv,local_att=local_att, intra_dropout=intra_dropout
             )
+            self.galr2 = GALR(
+                hidden_channels // 2, hidden_channels,
+                chunk_size=chunk_size, down_chunk_size=down_chunk_size,
+                num_blocks=num_blocks//3, num_heads=num_heads,
+                norm=norm, dropout=dropout,
+                low_dimension=low_dimension,
+                causal=causal,
+                eps=eps,
+                conv=conv,local_att=local_att, intra_dropout=intra_dropout
+            )
+            self.galr_merge = GALR(
+                hidden_channels // 2, hidden_channels, # TODO: 再改看看有沒有差異
+                chunk_size=chunk_size, down_chunk_size=down_chunk_size,
+                num_blocks=num_blocks//3, num_heads=num_heads,
+                norm=norm, dropout=dropout,
+                low_dimension=low_dimension,
+                causal=causal,
+                eps=eps,
+                conv=conv,local_att=local_att, intra_dropout=intra_dropout
+            )
+            # self.galr = GALR(
+            #     hidden_channels // 2, hidden_channels,
+            #     num_blocks=num_blocks, num_heads=num_heads,
+            #     norm=norm, dropout=dropout,
+            #     low_dimension=low_dimension,
+            #     causal=causal,
+            #     eps=eps,
+            #     conv=conv,local_att=local_att, intra_dropout=intra_dropout
+            # )
         self.overlap_add1d = OverlapAdd1d(chunk_size, hop_size)
         self.prelu = nn.PReLU()
         self.map = nn.Conv1d(num_features, n_sources*num_features, kernel_size=1, stride=1)
@@ -706,7 +740,7 @@ class Separator_NoSegment_HC(nn.Module):
         else:
             raise ValueError("Cannot support {}".format(mask_nonlinear))
             
-    def forward(self, input):
+    def forward(self, input1, input2):
         """
         Args:
             input (batch_size, num_features, n_frames)
@@ -715,23 +749,35 @@ class Separator_NoSegment_HC(nn.Module):
         """
         num_features, n_sources = self.num_features, self.n_sources
         chunk_size, hop_size = self.chunk_size, self.hop_size
-        batch_size, num_features, n_frames = input.size()
+        batch_size, num_features, n_frames = input1.size()
         
         padding = (hop_size-(n_frames-chunk_size)%hop_size)%hop_size
         padding_left = padding//2
         padding_right = padding - padding_left
-        x = F.pad(input, (padding_left, padding_right))
-        x = x.unsqueeze(2)
+        lst = [input1, input2]
+        for i, x_i in enumerate(lst):
+            lst[i] = F.pad(lst[i], (padding_left, padding_right))
+            lst[i] = lst[i].unsqueeze(2)
+            lst[i] = self.prelu(lst[i]) # New
+
+        lst[0] = self.norm2d1(lst[0])
+        lst[0] = self.conv2d1(lst[0])# New
+        lst[1] = self.norm2d2(lst[1])
+        lst[1] = self.conv2d2(lst[1])# New
+        lst[0] = self.galr1(lst[0])
+        lst[1] = self.galr2(lst[1])
+
+        x = torch.cat(lst, dim=2)
         x = self.prelu(x) # New
-        x = self.norm2d(x)
-        x = self.conv2d(x)# New
-        x = self.prelu(x) # New
-        x = self.galr(x)
+        x = self.galr_merge(x)
 
         x = self.prelu(x) # New
+        _, hid_channel, _ , pad_frame = x.size()
+        # 這邊應該可以做更好
+        x = x.view(batch_size, hid_channel*2, 1, pad_frame) # -> (batch_size*n_sources, num_features, n_frames)
         x = self.iconv2d(x)# New 
-        
         x = x.squeeze(2)
+        
         x = F.pad(x, (-padding_left, -padding_right))
         x = self.prelu(x) # -> (batch_size, C, n_frames), where C = num_features
         x = self.map(x) # -> (batch_size, n_sources*C, n_frames)
@@ -762,12 +808,11 @@ class Separator_HC_Inv(nn.Module):
         self.chunk_size, self.hop_size = chunk_size, hop_size
         
         self.segment1d = Segment1d(chunk_size, hop_size)
-        # TODO: 可以改 kernel size, 因為切塊後並不一定有相關 (1, 7)
-        self.inv2d: nn.Module = Involution2d(in_channels=num_features, out_channels=hidden_channels // 2, kernel_size=(1,7), padding=(0,3))
+        self.inv2d: nn.Module = Involution2d(in_channels=num_features, out_channels=hidden_channels // 2)
         # self.conv2d = nn.Conv2d(num_features, hidden_channels // 2, 1,1)
-       # self.iinv2d: nn.Module = Involution2d(in_channels=hidden_channels // 2, out_channels=num_features, kernel_size=(1,7), padding=(0,3))
+        self.iinv2d: nn.Module = Involution2d(in_channels=hidden_channels // 2, out_channels=num_features)
 
-        self.iconv2d = nn.Conv2d(hidden_channels // 2, num_features, 1,1) 
+        # self.iconv2d = nn.Conv2d(hidden_channels // 2, num_features, 1,1) 
         norm_name = 'cLN' if causal else 'gLN'
         self.norm2d = choose_layer_norm(norm_name, num_features, causal=causal, eps=eps)
 
@@ -838,8 +883,7 @@ class Separator_HC_Inv(nn.Module):
         x = self.galr(x)
 
         x = self.prelu(x) # New
-        x = self.iconv2d(x)
-        #x = self.iinv2d(x)# New 
+        x = self.iinv2d(x)# New 
         
         x = self.overlap_add1d(x)
         x = F.pad(x, (-padding_left, -padding_right))
@@ -873,10 +917,12 @@ class Separator_HC(nn.Module):
         self.chunk_size, self.hop_size = chunk_size, hop_size
         
         self.segment1d = Segment1d(chunk_size, hop_size)
-        self.conv2d = nn.Conv2d(num_features, hidden_channels // 2, 1,1)
-        self.iconv2d = nn.Conv2d(hidden_channels // 2, num_features, 1,1) 
+        self.conv2d1 = nn.Conv2d(num_features, hidden_channels // 2, 1,1)
+        self.conv2d2 = nn.Conv2d(num_features, hidden_channels // 2, 1,1)
+        self.iconv2d = nn.Conv2d(hidden_channels //2, num_features, 1,1) 
         norm_name = 'cLN' if causal else 'gLN'
-        self.norm2d = choose_layer_norm(norm_name, num_features, causal=causal, eps=eps)
+        self.norm2d1 = choose_layer_norm(norm_name, num_features, causal=causal, eps=eps)
+        self.norm2d2 = choose_layer_norm(norm_name, num_features, causal=causal, eps=eps)
 
         # intra_dropout = True
 
@@ -884,10 +930,30 @@ class Separator_HC(nn.Module):
             # If low-dimension representation, latent_dim and chunk_size are required
             if down_chunk_size is None:
                 raise ValueError("Specify down_chunk_size")
-            self.galr = GALR(
+            self.galr1 = GALR(
                 hidden_channels // 2, hidden_channels,
                 chunk_size=chunk_size, down_chunk_size=down_chunk_size,
-                num_blocks=num_blocks, num_heads=num_heads,
+                num_blocks=num_blocks//3, num_heads=num_heads,
+                norm=norm, dropout=dropout,
+                low_dimension=low_dimension,
+                causal=causal,
+                eps=eps,
+                conv=conv,local_att=local_att, intra_dropout=intra_dropout
+            )
+            self.galr2 = GALR(
+                hidden_channels // 2, hidden_channels,
+                chunk_size=chunk_size, down_chunk_size=down_chunk_size,
+                num_blocks=num_blocks//3, num_heads=num_heads,
+                norm=norm, dropout=dropout,
+                low_dimension=low_dimension,
+                causal=causal,
+                eps=eps,
+                conv=conv,local_att=local_att, intra_dropout=intra_dropout
+            )
+            self.galr_merge = GALR(
+                hidden_channels // 2, hidden_channels, # TODO: 再改看看有沒有差異
+                chunk_size=chunk_size, down_chunk_size=down_chunk_size,
+                num_blocks=num_blocks//3, num_heads=num_heads,
                 norm=norm, dropout=dropout,
                 low_dimension=low_dimension,
                 causal=causal,
@@ -895,15 +961,36 @@ class Separator_HC(nn.Module):
                 conv=conv,local_att=local_att, intra_dropout=intra_dropout
             )
         else:
-            self.galr = GALR(
+            self.galr1 = GALR(
                 hidden_channels // 2, hidden_channels,
-                num_blocks=num_blocks, num_heads=num_heads,
+                chunk_size=chunk_size, down_chunk_size=down_chunk_size,
+                num_blocks=num_blocks//3, num_heads=num_heads,
                 norm=norm, dropout=dropout,
                 low_dimension=low_dimension,
                 causal=causal,
                 eps=eps,
                 conv=conv,local_att=local_att, intra_dropout=intra_dropout
             )
+            self.galr2 = GALR(
+                hidden_channels // 2, hidden_channels,
+                chunk_size=chunk_size, down_chunk_size=down_chunk_size,
+                num_blocks=num_blocks//3, num_heads=num_heads,
+                norm=norm, dropout=dropout,
+                low_dimension=low_dimension,
+                causal=causal,
+                eps=eps,
+                conv=conv,local_att=local_att, intra_dropout=intra_dropout
+            )
+            self.galr_merge = GALR(
+                hidden_channels // 2, hidden_channels, # TODO: 再改看看有沒有差異
+                chunk_size=chunk_size, down_chunk_size=down_chunk_size,
+                num_blocks=num_blocks//3, num_heads=num_heads,
+                norm=norm, dropout=dropout,
+                low_dimension=low_dimension,
+                causal=causal,
+                eps=eps,
+                conv=conv,local_att=local_att, intra_dropout=intra_dropout
+                )
         self.overlap_add1d = OverlapAdd1d(chunk_size, hop_size)
         self.prelu = nn.PReLU()
         self.map = nn.Conv1d(num_features, n_sources*num_features, kernel_size=1, stride=1)
@@ -921,8 +1008,8 @@ class Separator_HC(nn.Module):
             self.mask_nonlinear = nn.PReLU()
         else:
             raise ValueError("Cannot support {}".format(mask_nonlinear))
-            
-    def forward(self, input):
+
+    def forward(self, input1, input2):
         """
         Args:
             input (batch_size, num_features, n_frames)
@@ -931,19 +1018,29 @@ class Separator_HC(nn.Module):
         """
         num_features, n_sources = self.num_features, self.n_sources
         chunk_size, hop_size = self.chunk_size, self.hop_size
-        batch_size, num_features, n_frames = input.size()
+        batch_size, num_features, n_frames = input1.size()
         
         padding = (hop_size-(n_frames-chunk_size)%hop_size)%hop_size
         padding_left = padding//2
         padding_right = padding - padding_left
-        x = F.pad(input, (padding_left, padding_right))
-        x = self.segment1d(x) # -> (batch_size, C, S, chunk_size)
+        lst = [input1, input2]
+        for i, x_i in enumerate(lst):
+            lst[i] = F.pad(lst[i], (padding_left, padding_right))
+            lst[i] = self.segment1d(lst[i]) # -> (batch_size, C, S, chunk_size)
+            lst[i] = self.prelu(lst[i]) # New
+        lst[0] = self.norm2d1(lst[0])
+        lst[0] = self.conv2d1(lst[0])# New
+        lst[1] = self.norm2d2(lst[1])
+        lst[1] = self.conv2d2(lst[1])# New
+        lst[0] = self.galr1(lst[0])
+        lst[1] = self.galr2(lst[1])
+        x = torch.cat(lst, dim=2)
         x = self.prelu(x) # New
-        x = self.norm2d(x)
-        x = self.conv2d(x)# New
-        x = self.prelu(x) # New
-        x = self.galr(x)
+        x = self.galr_merge(x)
+        x_dct, x_stft = x.chunk(2, dim=2)
+        # lst_out = [x_dct, x_stft] if self.dual_loss else [x_dct]
 
+        # for x_l in lst_out:
         x = self.prelu(x) # New
         x = self.iconv2d(x)# New 
         

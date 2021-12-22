@@ -10,10 +10,9 @@ from utils.utils import set_seed
 from dataset import WaveTrainDataset, WaveEvalDataset, TrainDataLoader, EvalDataLoader
 from new_dataset import WaveTrainDataset as NewTrainDataset
 from adhoc_driver import AdhocTrainer
-from models.galrnet import GALRNet
+from models.galrnet_2 import GALRNet
 from criterion.sdr import NegSISDR, ThresholdedSNR
-from criterion.stft_loss import DEMUCSLoss, MagMSELoss, \
-    CombinePFPLoss, CombineSISNRLoss, T_TF_Loss
+from criterion.stft_loss import DEMUCSLoss, MagMSELoss, CombinePFPLoss, CombineSISNRLoss
 from criterion.distance import L2Loss
 from driver import MyNegSISNR
 from criterion.pit import PIT1d
@@ -52,9 +51,7 @@ parser.add_argument('--sep_dropout', type=float, default=0.1, help='Dropout rate
 parser.add_argument('--mask_nonlinear', type=str, default='sigmoid', help='Non-linear function of mask estiamtion')
 parser.add_argument('--causal', type=int, default=0, help='Causality')
 parser.add_argument('--n_sources', type=int, default=None, help='# speakers')
-parser.add_argument('--criterion', type=str, default='sisdr', choices=['l2_sisnr','l2loss',\
-    'ttf1', 'ttf2', 'ttf3','pfp_sisnr','pfp_l2','pfp_thsnr','sisdr', 'this_sisdr', \
-    'threshold_snr','demucs_l1','demucs_mse','mse'], help='Criterion')
+parser.add_argument('--criterion', type=str, default='sisdr', choices=['l2_sisnr','l2loss','pfp_sisnr','pfp_l2','pfp_thsnr','sisdr', 'this_sisdr', 'threshold_snr','demucs_l1','demucs_mse','mse'], help='Criterion')
 parser.add_argument('--optimizer', type=str, default='adam', choices=['sgd', 'adam', 'rmsprop'], help='Optimizer, [sgd, adam, rmsprop]')
 parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate. Default: 1e-3')
 parser.add_argument('--weight_decay', type=float, default=0, help='Weight decay (L2 penalty). Default: 0')
@@ -140,16 +137,6 @@ def main(args):
         criterion = MyNegSISNR()
     elif args.criterion == 'this_sisdr':
         criterion = NegSISDR()
-    elif args.criterion == 'ttf1':
-        criterion = nn.L1Loss()
-        criterion = T_TF_Loss(criterion)
-    elif args.criterion == 'ttf2':
-        criterion = nn.MSELoss()
-        criterion = T_TF_Loss(criterion)
-    elif args.criterion == 'ttf3':
-        tf = nn.L1Loss()
-        t = nn.MSELoss()
-        criterion = T_TF_Loss(t, tf, 0.6)
     elif args.criterion == 'threshold_snr':
         criterion = ThresholdedSNR()
     elif args.criterion == 'demucs_l1':

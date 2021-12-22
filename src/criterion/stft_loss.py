@@ -304,10 +304,11 @@ class CombineSISNRLoss(torch.nn.Module):
 class T_TF_Loss(torch.nn.Module):
     """DEMUCS loss module."""
 
-    def __init__(self, loss, weight=0.2):
+    def __init__(self, loss_t, loss_tf, weight=0.2):
         """Initialize STFT loss module."""
         super(T_TF_Loss, self).__init__()
-        self.loss = nn.MSELoss()
+        self.loss_t = loss_t
+        self.loss_tf = loss_tf
         self.weight = weight
         
         # self.snr_loss = NegSISDR()
@@ -321,8 +322,8 @@ class T_TF_Loss(torch.nn.Module):
             Tensor: Spectral convergence loss value.
             Tensor: Log STFT magnitude loss value.
         """
-        loss = (1 - self.weight) * self.loss(x, y)
-        tf_loss = self.loss(latent_x , latent_y)
+        loss = (1 - self.weight) * self.loss_t(x, y)
+        tf_loss = self.loss_tf(latent_x , latent_y)
         loss += self.weight * tf_loss
 
 
