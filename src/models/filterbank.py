@@ -54,10 +54,11 @@ class FourierEncoder(nn.Module):
             basis_real, basis_imag = torch.cos(-omega_n), torch.sin(-omega_n)
         basis_real, basis_imag = basis_real.unsqueeze(dim=1), basis_imag.unsqueeze(dim=1)
 
-        if not self.onesided:
+        if not self.onesided: # if onesided is false
             _, basis_real_conj, _ = torch.split(basis_real, [1, n_basis // 2 - 1, 1], dim=0)
             _, basis_imag_conj, _ = torch.split(basis_imag, [1, n_basis // 2 - 1, 1], dim=0)
             basis_real_conj, basis_imag_conj = torch.flip(basis_real_conj, dims=(0,)), torch.flip(basis_imag_conj, dims=(0,))
+            print(basis_real.shape, basis_real_conj.shape)
             basis_real, basis_imag = torch.cat([basis_real, basis_real_conj], dim=0), torch.cat([basis_imag, - basis_imag_conj], dim=0)
         basis_real, basis_imag = window * basis_real, window * basis_imag
         output_real, output_imag = F.conv1d(input, basis_real, stride=stride), F.conv1d(input, basis_imag, stride=stride)

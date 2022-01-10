@@ -19,14 +19,9 @@ class GALR(nn.Module):
         if random_mask:
             net.append(GALRBlock_Mask(num_features, hidden_channels, name=0,num_heads=num_heads, norm=norm, dropout=dropout, low_dimension=low_dimension, causal=causal, eps=eps, **kwargs))
         else:
-            net.append(GALRBlock(num_features, hidden_channels, name=0, num_heads=num_heads, norm=norm, dropout=dropout, low_dimension=low_dimension, causal=causal, eps=eps, **kwargs))
+            net.append(GALRBlock_Conv(num_features, hidden_channels, name=0, num_heads=num_heads, norm=norm, dropout=dropout, low_dimension=low_dimension, causal=causal, eps=eps, **kwargs))
         for i in range(num_blocks-1):
-            if random_mask:
-                net.append(GALRBlock_Mask(num_features, hidden_channels, name=i+1,num_heads=num_heads, norm=norm, dropout=dropout, low_dimension=low_dimension, causal=causal, eps=eps, **kwargs))
-            elif conv:
-                net.append(GALRBlock_Conv(num_features, hidden_channels, name=i+1,num_heads=num_heads, norm=norm, dropout=dropout, low_dimension=low_dimension, causal=causal, eps=eps, **kwargs))
-            else:
-                net.append(GALRBlock(num_features, hidden_channels, name=i+1,num_heads=num_heads, norm=norm, dropout=dropout, low_dimension=low_dimension, causal=causal, eps=eps, **kwargs))
+            net.append(GALRBlock_Conv(num_features, hidden_channels, name=i+1,num_heads=num_heads, norm=norm, dropout=dropout, low_dimension=low_dimension, causal=causal, eps=eps, **kwargs))
             
         self.net = nn.Sequential(*net)
 
@@ -127,8 +122,12 @@ class GALRBlock_Conv(nn.Module):
             self.intra_chunk_att = LocallyAttentiveBlock(num_features, num_heads=num_heads, causal=causal, norm=norm, dropout=dropout, eps=eps)
         else:
             self.intra_chunk_att = None
+
+        self.num = name+1
         
-        self.conv2d = nn.Conv2d(num_features, num_features, 1,1)
+        # self.conv2d = nn.Conv2d(num_features, num_features, (name+1,1), (name+1,1))
+        self.conv3d = nn.Conv3d(num_features, num_features, (self.num,1,1))
+        self.prelu = nn.PReLU()
 
         if low_dimension:
             chunk_size = kwargs['chunk_size']
@@ -144,17 +143,29 @@ class GALRBlock_Conv(nn.Module):
         Returns:
             output (batch_size, num_features, S, chunk_size)
         """
-
-        x = self.intra_chunk_block(input)
+        if type(input) is tuple:
+            input, prev = input
+            x = torch.cat([input, *prev], dim=2)
+        else:
+            x = input
+            prev = []
+        x = self.intra_chunk_block(x)
         
         if self.intra_chunk_att:
             x = self.intra_chunk_att(x)
 
-        output = self.inter_chunk_block(x)
-        
-        output = self.conv2d(output)
+        x = self.inter_chunk_block(x)
 
-        return output
+        bs, feat, S, chunk = x.size()
+        x = x.view(bs, feat, self.num, -1, chunk)
+
+        output = self.conv3d(x)
+        output = output.squeeze(2)
+        # output = self.prelu(output)
+        output += input
+        # print(len(input), x.shape, output.shape)
+        prev.append(output)
+        return output, prev
 
 class CustomLocallyRecurrentBlock(nn.Module):
     def __init__(self, num_features, hidden_channels, norm=True, eps=EPS, dropout=0.1):

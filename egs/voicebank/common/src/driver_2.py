@@ -109,6 +109,7 @@ class TrainerBase:
         
         self.epochs = args.epochs
         self.criterion_str = args.criterion
+        self.handcraft = args.handcraft
 
         self.noise_loss = args.noise_loss
         print(f'train with noise:{self.noise_loss}')
@@ -234,7 +235,15 @@ class TrainerBase:
                 gt.requires_grad_()
                 loss = self.criterion(estimated_sources[:,0], sources[:,0], latent[:,0], gt)
             else:
-                loss = self.criterion(estimated_sources[:,0], sources[:,0])
+                if self.handcraft == 3:
+                    # TODO: can be add with a distance loss
+                    # loss = self.criterion(estimated_sources[0][:,0], sources[:,0]) # DCT
+                    # loss += self.criterion(estimated_sources[1][:,0], sources[:,0]) # STFT
+                    loss = 0.6 * self.criterion(estimated_sources[0][:,0], sources[:,0]) # Merge
+                    loss += 0.2 * self.criterion(estimated_sources[1][:,0], sources[:,0]) # DCT
+                    loss += 0.2 * self.criterion(estimated_sources[2][:,0], sources[:,0]) # STFT
+                else:
+                    loss = self.criterion(estimated_sources[:,0], sources[:,0])
             
             if self.noise_loss:
                 loss += self.criterion(estimated_sources[:,1], sources[:,1])
@@ -289,6 +298,11 @@ class TrainerBase:
                     padding_right = padding - padding_left
                     gt = self.model.module.encoder(nn.functional.pad(sources, (padding_left, padding_right)))
                     loss = self.criterion(output[:,0], sources[:,0], latent[:,0], gt)
+                elif self.handcraft == 3:
+                    # TODO: can be add with a distance loss
+                    loss = self.criterion(output[0][:,0], sources[:,0]) # Merge
+                    # loss += 0.2 * self.criterion(output[1][:,0], sources[:,0]) # DCT
+                    # loss += 0.2 * self.criterion(output[2][:,0], sources[:,0]) # STFT
                 else:
                     loss = self.criterion(output[:,0], sources[:,0])
 
@@ -411,7 +425,8 @@ class TesterBase:
                 
                 
                 output = self.model_estimate(mixture)
-                
+                if type(output) == list:
+                    output = output[0]
                 output = output[:,0] # -> only need 1st output
                 
                 loss = self.pit_criterion(output, sources.squeeze(dim=1), batch_mean=False)

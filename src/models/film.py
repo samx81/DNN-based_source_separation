@@ -61,6 +61,7 @@ class FiLM2d(FiLM):
         gamma = gamma.view(*dims)
         beta = beta.view(*dims)
         
+        print(gamma.shape, beta.shape)
         return gamma * input + beta
 
 class FiLM3d(FiLM):
