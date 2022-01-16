@@ -467,7 +467,7 @@ class Naked_Decoder(nn.Module):
             self.inv_transform = dct.isdct_torch
         elif feat_type == 'TENET':
             # pass
-            self.inv_transform = ISTFT(fft_len, win_len, win_inc, win_type=win_type)
+            self.inv_transform = ISTFT(fft_len, win_len, win_inc, win_type=win_type, center= True)
 
         # TODO: let window tensor can be auto convert to fft length
         if win_type == 'hanning':
@@ -499,6 +499,7 @@ class Naked_Decoder(nn.Module):
 class CustomFiLM(nn.Module):
     def __init__(self):
         super().__init__()
+        
 
     def forward(self, input, gamma, beta):
         """
@@ -515,6 +516,7 @@ class CustomFiLM(nn.Module):
 
         # gamma = gamma.view(*dims)
         # beta = beta.view(*dims)
+        
         
         return gamma * input + beta
 

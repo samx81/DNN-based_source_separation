@@ -43,7 +43,8 @@ class WaveDataset(WSJ0Dataset):
         self.json_data = []
 
         if use_h5py:
-            h5_file = os.path.join(wav_root, f'dataset_16k.h5')
+            h5_name = f'dataset_16k_noise.h5'if noise_loss else f'dataset_16k.h5'
+            h5_file = os.path.join(wav_root, h5_name)
             print(h5_file)
             if not os.path.isfile(h5_file):
                 raise Exception()
@@ -55,6 +56,9 @@ class WaveDataset(WSJ0Dataset):
             self.id_dset = h5_file.get('id', None)
             self.len_dset = h5_file.get('len', None)
 
+            if self.noise_loss:
+                self.noise_dset = h5_file.get('noise', None)
+
             print(type(self.id_dset))
             self.json_data = []
             total= []
@@ -65,9 +69,8 @@ class WaveDataset(WSJ0Dataset):
                     # print(v, flush=True)
                     total.append(self.len_dset[i])
 
-            print(np.mean(total))
+            # print(np.mean(total))
         else:
-
             clean_list_path = os.path.join(wav_root, 'clean.scp')
             noisy_list_path = os.path.join(wav_root, 'noisy.scp')
             noise_list_path = os.path.join(wav_root, 'noise.scp')
@@ -174,12 +177,12 @@ class WaveDataset(WSJ0Dataset):
         
         print(len(self.json_data), flush=True)
         self.spliceout_len = 24
-        self.spliecout_num = 2
+        self.spliceout_num = 2
 
-    def random_start_end(target_len, least_len, sample_len):
+    def random_start_end(self, target_len, least_len, sample_len):
         random_start = random.randint(0, sample_len - least_len)
         random_end = target_len + random_start
-        random_end = sample_length if random_end > sample_length else random_end
+        random_end = sample_len if random_end > sample_len else random_end
         
         return random_start, random_end
         
@@ -196,6 +199,10 @@ class WaveDataset(WSJ0Dataset):
             idx = self.json_data[idx]
             clean = np.array(self.clean_dset[idx])
             noisy = np.array(self.noisy_dset[idx])
+
+            if self.noise_loss:
+                noise = np.array(self.noise_dset[idx])
+            
             sample_length = self.len_dset[idx]
             ###
             # few situation,
@@ -207,27 +214,57 @@ class WaveDataset(WSJ0Dataset):
                     # random_start = random.randint(0, sample_length - self.least_sample)
                     # random_end = self.samples + random_start
                     # random_end = sample_length if random_end > sample_length else random_end
-                    random_start, random_end= random_start_end(self.samples, self.least_sample, sample_length)
+                    random_start, random_end= self.random_start_end(self.samples, self.least_sample, sample_length)
 
                     clean = clean[random_start:random_end]
                     noisy = noisy[random_start:random_end]
+
+                    if self.noise_loss:
+                        noise = noise[random_start:random_end]
                 else:
                     clean = clean[:sample_length]
                     noisy = noisy[:sample_length]
-                
+
+                    if self.noise_loss:
+                        noise = noise[:sample_length]
+
+            if self.mask == 'spliceout':
+                noisy, clean = spliceout(noisy, clean, self.spliceout_num, self.spliceout_len)
+                # noisy = spliceout(noisy, clean, self.spliceout_num, self.spliceout_len)
+
+            elif self.mask=='zero':
+                noisy = mask_samples(
+                    noisy, mask_length=self.mask_len,
+                    max_mask=self.max_mask, masking_type=self.mask
+                )
+            elif self.mask == 'both':
+                noisy, clean = spliceout(noisy, clean, self.spliceout_num, self.spliceout_len)
+                noisy = mask_samples(
+                    noisy, mask_length=self.mask_len,
+                    max_mask=self.max_mask, masking_type='zero'
+                )
             wave = torch.tensor(clean).unsqueeze(0)
             mixture = torch.tensor(noisy).unsqueeze(0)
 
-            if self.mask:
-                mixture = mask_samples(
-                    mixture, mask_length=self.mask_len,
-                    max_mask=self.max_mask, masking_type=self.mask
-                )
+            if self.noise_loss:
+                noise = torch.tensor(noise).unsqueeze(0)
 
             if len(clean) < self.samples:
                 P = self.samples - len(clean)
                 wave = F.pad(wave, (0, P), "constant")
-                mixture = F.pad(mixture, (0, P), "constant")
+                if self.noise_loss:
+                    noise = F.pad(noise, (0, P), "constant")
+
+            if len(noisy) < self.samples:
+                if self.mask == 'spliceout':
+                    MP = self.samples - len(noisy)
+                    # MP_L = MP//2
+                    # ML_R = MP//2 + 1 if MP % 2 != 0 else MP_L
+                    # assert MP == P, f'沒做好, {MP}, {P}'
+                    mixture = F.pad(mixture, (0, MP), "constant")
+                    # mixture = F.pad(mixture, (MP_L, ML_R), "constant")
+                else:
+                    mixture = F.pad(mixture, (0, P), "constant")
             
             segment_ID = str(self.id_dset[idx])
 
@@ -266,6 +303,7 @@ class WaveDataset(WSJ0Dataset):
                 self.noisy_dset[idx] = mixture[0]
         
         sources.append(wave)
+
         if self.noise_loss:
             sources.append(noise)
         
@@ -276,8 +314,9 @@ class WaveDataset(WSJ0Dataset):
         return len(self.json_data)
 
 class WaveTrainDataset(WaveDataset):
-    def __init__(self, wav_root, list_path, samples=32000, least_sample=None,overlap=None, n_sources=2, noise_loss=False, use_h5py=False):
-        super().__init__(wav_root, list_path, samples=samples, overlap=overlap, least_sample=least_sample, n_sources=n_sources, noise_loss=noise_loss, use_h5py=use_h5py)
+    def __init__(self, wav_root, list_path, samples=32000, least_sample=None,overlap=None, n_sources=2, noise_loss=False, use_h5py=False, mask=None):
+        super().__init__(wav_root, list_path, samples=samples, overlap=overlap, least_sample=least_sample,
+                        n_sources=n_sources, noise_loss=noise_loss, use_h5py=use_h5py, mask=mask)
     
     def __getitem__(self, idx):
         mixture, sources, _ = super().__getitem__(idx)
@@ -508,13 +547,13 @@ def spliceout(spec_noisy, spec_clean, interval_num, max_interval):
     # interval_num = N, max_interval = T
     spec_len = spec_noisy.shape[-1] # tau
     mask = np.ones(spec_len, dtype=bool)
-    for i in range(N):
-        remove_length = np.randint(max_interval)
-        start = np.randint(spec_len - remove_length)
-        mask[start : start+length] = False
+    for i in range(interval_num):
+        remove_length = np.random.randint(max_interval)
+        start = np.random.randint(spec_len - remove_length)
+        mask[start : start + remove_length] = False
     noisy, clean = spec_noisy[mask], spec_clean[mask]
     return noisy, clean
-
+    # return noisy
 
 if __name__ == '__main__':
     torch.manual_seed(111)

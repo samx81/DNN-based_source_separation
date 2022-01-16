@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from models.galrnet import GALRNet
+
 class TwoHead(nn.Module):
     def __init__(self, model_me, model_cs):
         super().__init__()
@@ -89,4 +91,37 @@ class Couple(nn.Module):
 
         return x
 
-    
+class MultiComplexFeatureGALRNet(GALRNet):
+    # Encoder needs a glu
+    def extract_latent(self, input):
+        """
+        Args:
+            input (batch_size, 1, T)
+        Returns:
+            output (batch_size, n_sources, T)
+            latent (batch_size, n_sources, n_bases, T'), where T' = (T-K)//S+1
+        """
+        n_sources = self.n_sources
+        n_bases = self.n_bases
+        kernel_size, stride = self.kernel_size, self.stride
+        
+        batch_size, C_in, T = input.size()
+        
+        assert C_in == 1, "input.size() is expected (?,1,?), but given {}".format(input.size())
+        
+        padding = (stride - (T-kernel_size)%stride)%stride
+        padding_left = padding//2
+        padding_right = padding - padding_left
+
+        input = F.pad(input, (padding_left, padding_right))
+        w = self.encoder(input) # [bs, feature, timestep]
+        mask = self.separator(w) # [bs, sources, feature, timestep]
+        w = w.unsqueeze(dim=1) # [bs, feature, timestep] -> [bs, sources, feature, timestep]
+        w_hat = w * mask # [bs, sources, feature, timestep]
+        latent = w_hat
+        w_hat = w_hat.view(batch_size*n_sources, n_bases, -1)
+        x_hat = self.decoder(w_hat)
+        x_hat = x_hat.view(batch_size, n_sources, -1)
+        output = F.pad(x_hat, (-padding_left, -padding_right))
+        
+        return output, latent

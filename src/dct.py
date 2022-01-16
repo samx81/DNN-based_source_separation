@@ -7,6 +7,7 @@ from librosa.core.spectrum import __overlap_add
 from librosa.util.exceptions import ParameterError
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import torch_dct
 
@@ -551,6 +552,221 @@ def librosa_istdct(
         y = util.fix_length(y[start:], length)
 
     return y
+
+import math
+from utils.utils_audio import build_window, build_optimal_window
+
+class CosineEncoder(nn.Module):
+    def __init__(self, n_basis, kernel_size, stride=None, window_fn='hann', trainable=False, trainable_phase=False, onesided=True, center=False):
+        super().__init__()
+
+        self.center = center
+        self.n_basis = n_basis
+        self.kernel_size, self.stride = kernel_size, stride
+        self.trainable, self.trainable_phase = trainable, trainable_phase
+        self.onesided = onesided
+
+        # Fourier > (2 * pi * k * n) / N, where n will multiply later
+        # Cosine  > (    pi * k    ) / N * (n + 1/2 )
+        # >> [(pi * k) / N * n] + [(pi * k) / (2*N)]
+
+        omega_a = math.pi * torch.arange(n_basis) / n_basis
+        omega_b = math.pi * torch.arange(n_basis) / (2 * n_basis)
+        n = torch.arange(kernel_size)
+
+        window = build_window(kernel_size, window_fn=window_fn)
+        
+        self.frequency_a, self.frequency_b = nn.Parameter(omega_a, requires_grad=trainable), nn.Parameter(omega_b, requires_grad=trainable)
+        self.time_seq =  nn.Parameter(n, requires_grad=False)
+        self.window = nn.Parameter(window)
+
+        # Why?
+        if self.trainable_phase:
+            phi = torch.zeros(n_basis)
+            self.phase = nn.Parameter(phi, requires_grad=True)
+    
+    def forward(self, input):
+        """
+        Args:
+            input <torch.Tensor>: (batch_size, 1, T)
+        Returns:
+            output <torch.Tensor>:
+                Complex tensor with shape of (batch_size, n_basis // 2 + 1, n_frames) if onesided=True and return_complex=True
+                Complex tensor with shape of (batch_size, n_basis, n_frames) if onesided=False and return_complex=True
+                Tensor with shape of (batch_size, 2 * (n_basis // 2 + 1), n_frames) if onesided=True and return_complex=False
+                Tensor with shape of (batch_size, 2 * n_basis, n_frames) if onesided=False and return_complex=False
+        """
+        n_basis = self.n_basis
+        stride = self.stride
+        omega_a, omega_b, n = self.frequency_a, self.frequency_b, self.time_seq
+        window = self.window
+
+        omega_n = omega_a.unsqueeze(dim=1) * n.unsqueeze(dim=0) + omega_b.unsqueeze(dim=1)
+        if self.trainable_phase:
+            phi = self.phase
+            basis_real = torch.cos(-(omega_n + phi.unsqueeze(dim=1)))
+        else:
+            basis_real = torch.cos(-omega_n)
+        basis_real = basis_real.unsqueeze(dim=1) #, basis_imag.unsqueeze(dim=1)
+
+        if not self.onesided:
+            # _, basis_real_conj, _ = torch.split(basis_real, [1, n_basis - 1, 1], dim=0)
+            # print(basis_real.shape, basis_real_conj.shape)
+            basis_real_conj = torch.flip(basis_real, dims=(0,))
+            # basis_real_conj = torch.flip(basis_real_conj, dims=(0,))
+            basis_real = torch.cat([basis_real, basis_real_conj], dim=0)
+        basis_real = window * basis_real
+
+        if self.center:
+            input_dim = input.dim()
+            extended_shape = [1] * (3 - input_dim) + list(input.size())
+            pad = int((self.kernel_size) // 2)
+            input = F.pad(input.view(extended_shape), [pad, pad], 'reflect')
+            input = input.view(input.shape[-input_dim:])
+
+        output = F.conv1d(input, basis_real, stride=stride)
+
+        # if self.return_complex:
+        #     output = torch.view_as_complex(output)
+        # else:
+        #     batch_size, n_bins, n_frames, _ = output.size()
+        #     output = output.permute(0, 3, 1, 2).contiguous()
+        #     output = output.view(batch_size, 2*n_bins, n_frames)
+
+        return output
+
+    def extra_repr(self):
+        s = "{n_basis}, kernel_size={kernel_size}, stride={stride}, trainable={trainable}, onesided={onesided}"
+        if self.trainable_phase:
+            s += ", trainable_phase={trainable_phase}"
+        
+        return s.format(**self.__dict__)
+
+    def get_basis(self):
+        n_basis = self.n_basis
+        omega_a, omega_b, n = self.frequency_a, self.frequency_b, self.time_seq
+        window = self.window
+
+        omega_n = omega_a.unsqueeze(dim=1) * n.unsqueeze(dim=0) + omega_b.unsqueeze(dim=1)
+        if self.trainable_phase:
+            phi = self.phase
+            basis_real = torch.cos(-(omega_n + phi.unsqueeze(dim=1)))
+        else:
+            basis_real = torch.cos(-omega_n)
+        
+        if not self.onesided:
+            _, basis_real_conj, _ = torch.split(basis_real, [1, n_basis - 1, 1], dim=0)
+            basis_real_conj = torch.flip(basis_real_conj, dims=(0,))
+            basis_real = torch.cat([basis_real, basis_real_conj], dim=0)
+
+        basis_real = window * basis_real
+    
+        return basis
+
+class CosineDecoder(nn.Module):
+    def __init__(self, n_basis, kernel_size, stride=None, window_fn='hann', trainable=False, trainable_phase=False, onesided=True, center=False):
+        super().__init__()
+
+        self.center = center
+        self.n_basis = n_basis
+        self.kernel_size, self.stride = kernel_size, stride
+        self.trainable, self.trainable_phase = trainable, trainable_phase
+        self.onesided = onesided
+
+        omega_a = math.pi * torch.arange(n_basis) / n_basis
+        omega_b = math.pi * torch.arange(n_basis) / (2 * n_basis)
+        n = torch.arange(kernel_size)
+
+        window = build_window(kernel_size, window_fn=window_fn)
+        optimal_window = build_optimal_window(window, hop_size=stride)
+        
+        self.frequency_a, self.frequency_b = nn.Parameter(omega_a, requires_grad=trainable), nn.Parameter(omega_b, requires_grad=trainable)
+        self.time_seq = nn.Parameter(n, requires_grad=False)
+        self.optimal_window = nn.Parameter(optimal_window)
+
+        if self.trainable_phase:
+            phi = torch.zeros(n_basis)
+            self.phase = nn.Parameter(phi, requires_grad=True)
+
+    def forward(self, input):
+        """
+        Args:
+            input <torch.Tensor>:
+                Complex tensor with shape of (batch_size, kernel_size // 2 + 1, n_frames) if onesided=True
+                Complex tensor with shape of (batch_size, kernel_size, n_frames) if onesided=False
+                Tensor with shape of (batch_size, 2 * (kernel_size // 2 + 1), n_frames) if onesided=True
+                Tensor with shape of (batch_size, 2 * kernel_size, n_frames) if onesided=False
+        Returns:
+            output <torch.Tensor>: (batch_size, 1, T)
+        """
+        n_basis = self.n_basis
+        stride = self.stride
+        omega_a, omega_b, n = self.frequency_a, self.frequency_b, self.time_seq
+        optimal_window = self.optimal_window
+
+        input_real = input
+        # if torch.is_complex(input):
+        #     input_real, input_imag = input.real, input.imag
+        # else:    
+        #     n_bins = input.size(1)
+        #     input_real, input_imag = torch.split(input, [n_bins // 2, n_bins // 2], dim=1)
+        
+        omega_n = omega_a.unsqueeze(dim=1) * n.unsqueeze(dim=0) + omega_b.unsqueeze(dim=1)
+        if self.trainable_phase:
+            phi = self.phase
+            basis_real = torch.cos(omega_n + phi.unsqueeze(dim=1))
+        else:
+            basis_real = torch.cos(omega_n)
+        basis_real= basis_real.unsqueeze(dim=1)
+
+        # _, basis_real_conj, _ = torch.split(basis_real, [1, n_basis - 1, 1], dim=0)
+
+        basis_real_conj = torch.flip(basis_real, dims=(0,))
+        # basis_real_conj = torch.flip(basis_real_conj, dims=(0,))
+        basis_real = torch.cat([basis_real, basis_real_conj], dim=0)
+        basis_real = optimal_window * basis_real
+        basis_real = basis_real / n_basis
+
+        if self.onesided:
+            # _, input_real_conj, _ = torch.split(input_real, [1, n_basis - 1, 1], dim=1)
+            # input_real_conj = torch.flip(input_real_conj, dims=(1,))
+            input_real_conj = torch.flip(input_real, dims=(1,))
+            input_real = torch.cat([input_real, input_real_conj], dim=1)
+
+        output = F.conv_transpose1d(input_real, basis_real, stride=stride)
+
+        return output
+
+    def extra_repr(self):
+        s = "{n_basis}, kernel_size={kernel_size}, stride={stride}, trainable={trainable}, onesided={onesided}"
+        if self.trainable_phase:
+            s += ", trainable_phase={trainable_phase}"
+        
+        return s.format(**self.__dict__)
+
+    def get_basis(self):
+        n_basis = self.n_basis
+        omega, n = self.frequency, self.time_seq
+        optimal_window = self.optimal_window
+
+        omega_n = omega.unsqueeze(dim=1) * n.unsqueeze(dim=0)
+        if self.trainable_phase:
+            phi = self.phase
+            basis_real, basis_imag = torch.cos(omega_n + phi.unsqueeze(dim=1)), torch.sin(omega_n + phi.unsqueeze(dim=1))
+        else:
+            basis_real, basis_imag = torch.cos(omega_n), torch.sin(omega_n)
+
+        if not self.onesided:
+            _, basis_real_conj, _ = torch.split(basis_real, [1, n_basis // 2 - 1, 1], dim=0)
+            _, basis_imag_conj, _ = torch.split(basis_imag, [1, n_basis // 2 - 1, 1], dim=0)
+            basis_real_conj, basis_imag_conj = torch.flip(basis_real_conj, dims=(0,)), torch.flip(basis_imag_conj, dims=(0,))
+            basis_real, basis_imag = torch.cat([basis_real, basis_real_conj], dim=0), torch.cat([basis_imag, - basis_imag_conj], dim=0)
+        
+        basis_real, basis_imag = optimal_window * basis_real, optimal_window * basis_imag
+        basis_real, basis_imag = basis_real / n_basis, basis_imag / n_basis
+        basis = torch.cat([basis_real, basis_imag], dim=0)
+
+        return basis
 
 
 if __name__ == '__main__':

@@ -237,7 +237,9 @@ class TrainerBase:
                 loss = self.criterion(estimated_sources[:,0], sources[:,0])
             
             if self.noise_loss:
+                # TODO: Exp about network output mask and negative mask diff
                 loss += self.criterion(estimated_sources[:,1], sources[:,1])
+                loss /= 2
             
             self.optimizer.zero_grad()
             loss.backward()

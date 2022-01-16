@@ -1,5 +1,7 @@
 #!/bin/bash
 
+args=$@
+
 exp_dir="./exp"
 continue_from=""
 tag=""
@@ -39,6 +41,8 @@ local_att=
 handcraft=
 intra_dropout=
 no_low_dim=
+mask=
+noise_loss=
 # Separator
 H=128
 K=100
@@ -106,6 +110,8 @@ time_stamp=`TZ=UTC-9 date "+%Y%m%d-%H%M%S"`
 
 export CUDA_VISIBLE_DEVICES="${gpu_id}"
 
+echo "$0 ${args}" > "${log_dir}/train_${time_stamp}.log"
+
 train.py \
 ${new_dset:+"--new_dset"} \
 --worker ${worker} \
@@ -129,7 +135,9 @@ ${new_dset:+"--new_dset"} \
 -N ${N} \
 -J ${J} \
 ${no_low_dim:+"--no-low-dim"} \
+${noise_loss:+"--noise_loss"} \
 ${handcraft:+"--handcraft"} ${handcraft:+"$handcraft"} \
+${mask:+"--mask"} ${mask:+"$mask"} \
 ${intra_dropout:+"--intra_dropout"} \
 ${conv:+"--conv"} \
 ${local_att:+"--local_att"} \
@@ -152,4 +160,4 @@ ${stride:+"--stride"} ${stride:+"$stride"} \
 --continue_from "${continue_from}" \
 --use_cuda ${use_cuda} \
 --overwrite ${overwrite} \
---seed ${seed} | tee "${log_dir}/train_${time_stamp}.log"
+--seed ${seed} | tee -a "${log_dir}/train_${time_stamp}.log"

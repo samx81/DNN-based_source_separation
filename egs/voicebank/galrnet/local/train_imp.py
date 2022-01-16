@@ -8,7 +8,7 @@ import torch.nn as nn
 
 from utils.utils import set_seed
 from dataset import WaveTrainDataset, WaveEvalDataset, TrainDataLoader, EvalDataLoader
-from adhoc_driver import AdhocTrainer
+from adhoc_driver import AdhocTrainer_denoise,AdhocTrainer
 from models.galrnet_imp import GALRNet, GALRNet_Res, GALRNet_Res_NoDeno, GALRNet_Denoise, GALRNet_Denoise2
 from criterion.sdr import NegSISDR, ThresholdedSNR
 from criterion.stft_loss import DEMUCSLoss, MagMSELoss, CombinePFPLoss, FSNetLoss
@@ -191,7 +191,7 @@ def main(args):
     
     # pit_criterion = PIT1d(criterion, n_sources=args.n_sources)
     
-    trainer = AdhocTrainer(model, loader, criterion, optimizer, args)
+    trainer = AdhocTrainer_denoise(model, loader, criterion, optimizer, args)
     trainer.run()
     
 if __name__ == '__main__':

@@ -8,7 +8,8 @@ from utils.utils_filterbank import choose_filterbank
 from utils.utils_tasnet import choose_layer_norm
 from models.gtu import GTU1d
 from models.transform import Segment1d, OverlapAdd1d
-from models.galr import GALR
+from models.galr import GALR, LayerNormAlongChannel
+from models.custom.galr_dcn import GALR as GALR_DCN
 from dccrn import DCCRN_Encoder,DCCRN_Decoder, DCTCN_Encoder, \
     DCTCN_Decoder,Naked_Encoder, Naked_Decoder, FiLM_Encoder, \
     Deep_Encoder, Deep_Decoder
@@ -83,6 +84,11 @@ class GALRNet(nn.Module):
             # self.n_basis = n_basis = 8192
             encoder1, decoder1 = Naked_Encoder(feat_type='dct',causal=causal), Naked_Decoder(feat_type='dct')
             encoder2, decoder2 = Naked_Encoder(feat_type='TENET',causal=causal), Naked_Decoder(feat_type='TENET')
+            aux_basis = None
+        elif 'time' in [enc_basis, dec_basis]:
+            encoder1, decoder1 = Naked_Encoder(feat_type='dct',causal=causal), Naked_Decoder(feat_type='dct')
+            encoder2, decoder2 = choose_filterbank(128, kernel_size=kernel_size, stride=stride, enc_basis='trainable', dec_basis='trainable', **kwargs)
+            aux_basis = 128
         else:
             encoder, decoder = choose_filterbank(n_basis, kernel_size=kernel_size, stride=stride, enc_basis=enc_basis, dec_basis=dec_basis, **kwargs)
         
@@ -115,33 +121,42 @@ class GALRNet(nn.Module):
                 eps=eps, conv=conv, local_att=self.local_att, intra_dropout=self.intra_dropout
             )
         elif self.handcraft == 3 :# and enc_basis in ['TorchSTFT', 'TENET', 'DCT', 'FiLM_DCT']:
-            self.separator = Separator_NoSegment_Deep( # Separator_HC Separator_NoSegment Separator_NoSegment_HC
+            self.separator = Separator_HC( # Separator_HC Separator_NoSegment Separator_NoSegment_HC
                 n_basis, hidden_channels=sep_hidden_channels,
                 chunk_size=sep_chunk_size, hop_size=sep_hop_size, down_chunk_size=sep_down_chunk_size, num_blocks=sep_num_blocks,
                 num_heads=sep_num_heads, norm=sep_norm, dropout=sep_dropout, mask_nonlinear=mask_nonlinear,
-                low_dimension=False,  # low_dimension,
+                low_dimension=low_dimension,
                 causal=causal,
-                n_sources=n_sources,
+                n_sources=n_sources, dual_loss=True,
                 eps=eps, conv=conv, local_att=self.local_att, intra_dropout=self.intra_dropout
             )
+            self.decoder2 = decoder2
         elif self.handcraft == 4 :# and enc_basis in ['TorchSTFT', 'TENET', 'DCT', 'FiLM_DCT']:
-            self.separator = Separator_NoSegment_Deep( # Separator_HC Separator_NoSegment Separator_NoSegment_HC
-                n_basis, hidden_channels=sep_hidden_channels,
+            self.separator = Separator_HC_CA( # Separator_HC Separator_NoSegment Separator_NoSegment_HC
+                n_basis, aux_basis=aux_basis, hidden_channels=sep_hidden_channels,
                 chunk_size=sep_chunk_size, hop_size=sep_hop_size, down_chunk_size=sep_down_chunk_size, num_blocks=sep_num_blocks,
                 num_heads=sep_num_heads, norm=sep_norm, dropout=sep_dropout, mask_nonlinear=mask_nonlinear,
-                low_dimension=False,  # low_dimension,
-                causal=causal,
-                n_sources=n_sources, bottleneck=True,
+                low_dimension=False,  #dual_loss=True,
+                causal=causal, n_sources=n_sources, 
                 eps=eps, conv=conv, local_att=self.local_att, intra_dropout=self.intra_dropout
             )
         elif self.handcraft == 5 :# and enc_basis in ['TorchSTFT', 'TENET', 'DCT', 'FiLM_DCT']:
-            self.separator = Separator_HC_Inv( # Separator_HC Separator_NoSegment Separator_NoSegment_HC
+            self.separator = Separator_HC( # Separator_HC Separator_NoSegment Separator_NoSegment_HC
                 n_basis, hidden_channels=sep_hidden_channels,
                 chunk_size=sep_chunk_size, hop_size=sep_hop_size, down_chunk_size=sep_down_chunk_size, num_blocks=sep_num_blocks,
                 num_heads=sep_num_heads, norm=sep_norm, dropout=sep_dropout, mask_nonlinear=mask_nonlinear,
-                low_dimension=False,  # low_dimension,
+                low_dimension=low_dimension,
                 causal=causal,
-                n_sources=n_sources,
+                n_sources=n_sources, dual_loss=True, pool=True,
+                eps=eps, conv=conv, local_att=self.local_att, intra_dropout=self.intra_dropout
+            )
+        elif self.handcraft == 6 :# and enc_basis in ['TorchSTFT', 'TENET', 'DCT', 'FiLM_DCT']:
+            self.separator = Separator_HC_CA( # Separator_HC Separator_NoSegment Separator_NoSegment_HC
+                n_basis, aux_basis=aux_basis, hidden_channels=sep_hidden_channels,
+                chunk_size=sep_chunk_size, hop_size=sep_hop_size, down_chunk_size=sep_down_chunk_size, num_blocks=sep_num_blocks,
+                num_heads=sep_num_heads, norm=sep_norm, dropout=sep_dropout, mask_nonlinear=mask_nonlinear,
+                low_dimension=False,  dual_loss=True,
+                causal=causal, n_sources=n_sources, 
                 eps=eps, conv=conv, local_att=self.local_att, intra_dropout=self.intra_dropout
             )
         else:
@@ -186,7 +201,7 @@ class GALRNet(nn.Module):
         
         assert C_in == 1, "input.size() is expected (?, 1, ?), but given {}".format(input.size())
         ## TODO: 改這邊的 kernel size 讓輸出有對準
-        if self.enc_basis in ['DCCRN', 'DCTCN', 'TorchSTFT', 'TENET', 'DCT', 'FiLM_DCT']:
+        if self.enc_basis in ['DCCRN', 'DCTCN', 'time', 'TENET', 'DCT', 'FiLM_DCT']:
             padding = (100 - (T - 400) % 100) % 100
         else:
             padding = (stride - (T - kernel_size) % stride) % stride
@@ -206,6 +221,14 @@ class GALRNet(nn.Module):
             mask = self.separator(w)
             dct = dct.unsqueeze(dim=1)
             w_hat = dct * mask
+        elif self.handcraft == 3 or self.handcraft == 6:
+            mask_merge, mask_dct, mask_stft = self.separator(w1, w2)
+            w1 = w1.unsqueeze(dim=1)
+            w_hat = w1 * mask_merge
+
+            w_hat2 = w1 * mask_dct
+            w2 = w2.unsqueeze(dim=1)
+            w_hat3 = w2 * mask_stft
         else:
             mask = self.separator(w1, w2)
             w1 = w1.unsqueeze(dim=1)
@@ -219,10 +242,23 @@ class GALRNet(nn.Module):
         else:
             x_hat = self.decoder(w_hat)
         x_hat = x_hat.view(batch_size, n_sources, -1)
-        output = x_hat
-        output = F.pad(x_hat, (-padding_left, -padding_right))
+        x_hat = F.pad(x_hat, (-padding_left, -padding_right))
+
+        if self.handcraft == 3 and self.handcraft == 6:
+            latent_dct = w_hat2
+            w_hat2 = w_hat2.view(batch_size*n_sources, n_basis, -1)
+            x_hat2 = self.decoder(w_hat2)
+            x_hat2 = x_hat2.view(batch_size, n_sources, -1)
+            x_hat2 = F.pad(x_hat2, (-padding_left, -padding_right))
+
+            latent_stft = w_hat3
+            w_hat3 = w_hat3.view(batch_size*n_sources, n_basis, -1)
+            x_hat3 = self.decoder2(w_hat3)
+            x_hat3 = x_hat3.view(batch_size, n_sources, -1)
+            x_hat3 = F.pad(x_hat3, (-padding_left, -padding_right))
         
-        return output, latent
+            return [x_hat, x_hat2, x_hat3], [latent, latent_dct, latent_stft]
+        return x_hat, latent
     
     def get_config(self):
         config = {
@@ -896,9 +932,7 @@ class Separator_HC_Inv(nn.Module):
         
         return output
 
-
-# Hand Craft Feature
-class Separator_HC(nn.Module):
+class Separator_HC_CA(nn.Module):
     def __init__(
         self,
         num_features, hidden_channels=128,
@@ -908,22 +942,33 @@ class Separator_HC(nn.Module):
         causal=True,
         n_sources=2,
         eps=EPS,
-        conv=False,
-        local_att=False, intra_dropout=False
+        conv=False, dual_loss = False,
+        local_att=False, intra_dropout=False,
+        aux_basis=None,
     ):
         super().__init__()
         
         self.num_features, self.n_sources = num_features, n_sources
         self.chunk_size, self.hop_size = chunk_size, hop_size
         
+        aux_basis = num_features if aux_basis is None else aux_basis
         self.segment1d = Segment1d(chunk_size, hop_size)
         self.conv2d1 = nn.Conv2d(num_features, hidden_channels // 2, 1,1)
-        self.conv2d2 = nn.Conv2d(num_features, hidden_channels // 2, 1,1)
+        self.conv2d2 = nn.Conv2d(aux_basis, hidden_channels // 2, 1,1)
         self.iconv2d = nn.Conv2d(hidden_channels //2, num_features, 1,1) 
+
+        self.ca = ContextCrossAttention(hidden_channels // 2, num_heads, dropout=0.1, norm=True,causal=causal)
+
         norm_name = 'cLN' if causal else 'gLN'
         self.norm2d1 = choose_layer_norm(norm_name, num_features, causal=causal, eps=eps)
-        self.norm2d2 = choose_layer_norm(norm_name, num_features, causal=causal, eps=eps)
+        self.norm2d2 = choose_layer_norm(norm_name, aux_basis, causal=causal, eps=eps)
 
+        self.dual_loss = dual_loss
+        if dual_loss:
+            self.iconv2d2 = nn.Conv2d(hidden_channels//2, aux_basis, 1,1) 
+            self.map2 = nn.Conv1d(aux_basis, n_sources*aux_basis, kernel_size=1, stride=1)
+            self.gtu2 = GTU1d(aux_basis, aux_basis, kernel_size=1, stride=1)
+            self.mask_nonlinear2 = nn.ReLU()
         # intra_dropout = True
 
         if low_dimension:
@@ -933,7 +978,7 @@ class Separator_HC(nn.Module):
             self.galr1 = GALR(
                 hidden_channels // 2, hidden_channels,
                 chunk_size=chunk_size, down_chunk_size=down_chunk_size,
-                num_blocks=num_blocks//3, num_heads=num_heads,
+                num_blocks=num_blocks//2, num_heads=num_heads,
                 norm=norm, dropout=dropout,
                 low_dimension=low_dimension,
                 causal=causal,
@@ -943,7 +988,7 @@ class Separator_HC(nn.Module):
             self.galr2 = GALR(
                 hidden_channels // 2, hidden_channels,
                 chunk_size=chunk_size, down_chunk_size=down_chunk_size,
-                num_blocks=num_blocks//3, num_heads=num_heads,
+                num_blocks=num_blocks//2, num_heads=num_heads,
                 norm=norm, dropout=dropout,
                 low_dimension=low_dimension,
                 causal=causal,
@@ -953,7 +998,7 @@ class Separator_HC(nn.Module):
             self.galr_merge = GALR(
                 hidden_channels // 2, hidden_channels, # TODO: 再改看看有沒有差異
                 chunk_size=chunk_size, down_chunk_size=down_chunk_size,
-                num_blocks=num_blocks//3, num_heads=num_heads,
+                num_blocks=1, num_heads=num_heads,
                 norm=norm, dropout=dropout,
                 low_dimension=low_dimension,
                 causal=causal,
@@ -992,6 +1037,229 @@ class Separator_HC(nn.Module):
                 conv=conv,local_att=local_att, intra_dropout=intra_dropout
                 )
         self.overlap_add1d = OverlapAdd1d(chunk_size, hop_size)
+        self.prelu_f1_in = nn.PReLU()
+        self.prelu_f2_in = nn.PReLU()
+        self.prelu_f1_mid = nn.PReLU()
+        self.prelu_f2_mid = nn.PReLU()
+        self.prelu_f1_out = nn.PReLU()
+        self.prelu_f2_out = nn.PReLU()
+        self.map = nn.Conv1d(num_features, n_sources*num_features, kernel_size=1, stride=1)
+        self.gtu = GTU1d(num_features, num_features, kernel_size=1, stride=1)
+        
+        if mask_nonlinear == 'relu':
+            self.mask_nonlinear = nn.ReLU()
+        elif mask_nonlinear == 'sigmoid':
+            self.mask_nonlinear = nn.Sigmoid()
+        elif mask_nonlinear == 'softmax':
+            self.mask_nonlinear = nn.Softmax(dim=1)
+        elif mask_nonlinear == 'tanh':
+            self.mask_nonlinear = nn.Tanh()
+        elif mask_nonlinear == 'prelu':
+            self.mask_nonlinear = nn.PReLU()
+        else:
+            raise ValueError("Cannot support {}".format(mask_nonlinear))
+
+    def forward(self, input1, input2):
+        """
+        Args:
+            input (batch_size, num_features, n_frames)
+        Returns:
+            output (batch_size, n_sources, num_features, n_frames)
+        """
+        num_features, n_sources = self.num_features, self.n_sources
+        chunk_size, hop_size = self.chunk_size, self.hop_size
+        batch_size, num_features, n_frames = input1.size()
+        _, aux_basis, n_frames2 = input2.size()
+        
+        padding1 = (hop_size-(n_frames-chunk_size)%hop_size)%hop_size
+        padding_left = padding1//2
+        padding_right = padding1 - padding_left
+        lst = [input1, input2]
+        # for i, x_i in enumerate(lst):
+        lst[0] = F.pad(lst[0], (padding_left, padding_right))
+        lst[0] = self.segment1d(lst[0]) # -> (batch_size, C, S, chunk_size)
+        lst[0] = self.prelu_f1_in(lst[0]) # New
+
+        padding2 = (hop_size-(n_frames2-chunk_size)%hop_size)%hop_size
+        padding_left2 = padding2//2
+        padding_right2 = padding2 - padding_left2
+        # for i, x_i in enumerate(lst):
+        lst[1] = F.pad(lst[1], (padding_left2, padding_right2))
+        lst[1] = self.segment1d(lst[1]) # -> (batch_size, C, S, chunk_size)
+        lst[1] = self.prelu_f2_in(lst[1]) # New
+            
+        lst[0] = self.norm2d1(lst[0])
+        lst[0] = self.conv2d1(lst[0])# New
+        lst[1] = self.norm2d2(lst[1])
+        lst[1] = self.conv2d2(lst[1])# New
+        lst[0] = self.galr1(lst[0])
+        lst[1] = self.galr2(lst[1])
+
+        x = self.ca(lst[0], lst[1])
+        # x = torch.cat(lst, dim=2)
+        # x = self.prelu(x) # New
+        x_dct = self.galr_merge(x)
+        x_dct += x
+        # x_dct, _ = x.chunk(2, dim=2)
+        # map/ gtu/ iconv2d need to be independent?
+        if self.dual_loss:
+            lst_mid = [x_dct, lst[0]]
+            lst_out = []
+            for x_l in lst_mid:
+                x_l = self.prelu_f1_mid(x_l) # New
+                x_l = self.iconv2d(x_l)# New 
+                
+                x_l = self.overlap_add1d(x_l)
+                x_l = F.pad(x_l, (-padding_left, -padding_right))
+                x_l = self.prelu_f1_out(x_l) # -> (batch_size, C, n_frames), where C = num_features
+                x_l = self.map(x_l) # -> (batch_size, n_sources*C, n_frames)
+                x_l = x_l.view(batch_size*n_sources, num_features, n_frames) # -> (batch_size*n_sources, num_features, n_frames)
+                x_l = self.gtu(x_l) # -> (batch_size*n_sources, num_features, n_frames)
+                x_l = self.mask_nonlinear(x_l) # -> (batch_size*n_sources, num_features, n_frames)
+                output = x_l.view(batch_size, n_sources, num_features, n_frames)
+                lst_out.append(output)
+
+            x_stft = self.prelu_f2_mid(lst[1]) # New
+            x_stft = self.iconv2d2(x_stft)# New 
+            
+            x_stft = self.overlap_add1d(x_stft)
+            x_stft = F.pad(x_stft, (-padding_left2, -padding_right2))
+            x_stft = self.prelu_f2_out(x_stft) # -> (batch_size, C, n_frames), where C = num_features
+            x_stft = self.map2(x_stft) # -> (batch_size, n_sources*C, n_frames)
+            x_stft = x_stft.view(batch_size*n_sources, aux_basis, -1) # -> (batch_size*n_sources, num_features, n_frames)
+            x_stft = self.gtu2(x_stft) # -> (batch_size*n_sources, num_features, n_frames)
+            x_stft = self.mask_nonlinear2(x_stft) # -> (batch_size*n_sources, num_features, n_frames)
+            output = x_stft.view(batch_size, n_sources, aux_basis, -1)
+            lst_out.append(output)
+
+            return lst_out
+            
+        else:
+            x_dct += lst[0]
+            # x = self.prelu(x_dct) # New
+            x = self.iconv2d(x_dct)# New 
+            x = self.prelu_f1_mid(x)
+
+            x = self.overlap_add1d(x)
+            x = F.pad(x, (-padding_left, -padding_right))
+            x = self.prelu_f1_out(x) # -> (batch_size, C, n_frames), where C = num_features
+            x = self.map(x) # -> (batch_size, n_sources*C, n_frames)
+            x = x.view(batch_size*n_sources, num_features, n_frames) # -> (batch_size*n_sources, num_features, n_frames)
+            x = self.gtu(x) # -> (batch_size*n_sources, num_features, n_frames)
+            x = self.mask_nonlinear(x) # -> (batch_size*n_sources, num_features, n_frames)
+            output = x.view(batch_size, n_sources, num_features, n_frames)
+            
+            return output
+
+# Hand Craft Feature
+class Separator_HC(nn.Module):
+    def __init__(
+        self,
+        num_features, hidden_channels=128,
+        chunk_size=100, hop_size=50, down_chunk_size=None, num_blocks=6, num_heads=4,
+        norm=True, dropout=0.1, mask_nonlinear='relu',
+        low_dimension=True,
+        causal=True,
+        n_sources=2,
+        eps=EPS,
+        conv=False, dual_loss = False, pool=False,
+        local_att=False, intra_dropout=False
+    ):
+        super().__init__()
+        
+        self.num_features, self.n_sources = num_features, n_sources
+        self.chunk_size, self.hop_size = chunk_size, hop_size
+        
+        self.segment1d = Segment1d(chunk_size, hop_size)
+        self.conv2d1 = nn.Conv2d(num_features, hidden_channels // 2, 1,1)
+        self.conv2d2 = nn.Conv2d(num_features, hidden_channels // 2, 1,1)
+        self.iconv2d = nn.Conv2d(hidden_channels //2, num_features, 1,1) 
+        norm_name = 'cLN' if causal else 'gLN'
+        self.norm2d1 = choose_layer_norm(norm_name, num_features, causal=causal, eps=eps)
+        self.norm2d2 = choose_layer_norm(norm_name, num_features, causal=causal, eps=eps)
+
+        self.dual_loss = dual_loss
+        if dual_loss:
+            self.iconv2d2 = nn.Conv2d(hidden_channels //2, num_features, 1,1) 
+            self.map2 = nn.Conv1d(num_features, n_sources*num_features, kernel_size=1, stride=1)
+            self.gtu2 = GTU1d(num_features, num_features, kernel_size=1, stride=1)
+            self.mask_nonlinear2 = nn.Tanh()
+        
+        self.pool = pool
+        if pool:
+            self.merge_time = torch.nn.Conv2d(hidden_channels //2, hidden_channels //2, kernel_size= (2,1), stride=(2,1))
+        else:
+            self.merge_time = torch.nn.Conv2d(num_features, num_features, kernel_size= (2,1), stride=(2,1))
+
+
+        # intra_dropout = True
+
+        if low_dimension:
+            # If low-dimension representation, latent_dim and chunk_size are required
+            if down_chunk_size is None:
+                raise ValueError("Specify down_chunk_size")
+            self.galr1 = GALR(
+                hidden_channels // 2, hidden_channels,
+                chunk_size=chunk_size, down_chunk_size=down_chunk_size,
+                num_blocks=num_blocks//3, num_heads=num_heads,
+                norm=norm, dropout=dropout,
+                low_dimension=low_dimension,
+                causal=causal,
+                eps=eps,
+                conv=conv,local_att=local_att, intra_dropout=intra_dropout
+            )
+            self.galr2 = GALR(
+                hidden_channels // 2, hidden_channels,
+                chunk_size=chunk_size, down_chunk_size=down_chunk_size,
+                num_blocks=num_blocks//3, num_heads=num_heads,
+                norm=norm, dropout=dropout,
+                low_dimension=low_dimension,
+                causal=causal,
+                eps=eps,
+                conv=conv,local_att=local_att, intra_dropout=intra_dropout
+            )
+            self.galr_merge = GALR_DCN(
+                hidden_channels // 2, hidden_channels, # TODO: 再改看看有沒有差異
+                chunk_size=chunk_size, down_chunk_size=down_chunk_size,
+                num_blocks=num_blocks//3, num_heads=num_heads,
+                norm=norm, dropout=dropout,
+                low_dimension=low_dimension,
+                causal=causal,
+                eps=eps,
+                conv=conv,local_att=local_att, intra_dropout=intra_dropout
+            )
+        else:
+            self.galr1 = GALR(
+                hidden_channels // 2, hidden_channels,
+                chunk_size=chunk_size, down_chunk_size=down_chunk_size,
+                num_blocks=num_blocks//3, num_heads=num_heads,
+                norm=norm, dropout=dropout,
+                low_dimension=low_dimension,
+                causal=causal,
+                eps=eps,
+                conv=conv,local_att=local_att, intra_dropout=intra_dropout
+            )
+            self.galr2 = GALR(
+                hidden_channels // 2, hidden_channels,
+                chunk_size=chunk_size, down_chunk_size=down_chunk_size,
+                num_blocks=num_blocks//3, num_heads=num_heads,
+                norm=norm, dropout=dropout,
+                low_dimension=low_dimension,
+                causal=causal,
+                eps=eps,
+                conv=conv,local_att=local_att, intra_dropout=intra_dropout
+            )
+            self.galr_merge = GALR(
+                hidden_channels // 2, hidden_channels, # TODO: 再改看看有沒有差異
+                chunk_size=chunk_size, down_chunk_size=down_chunk_size,
+                num_blocks=num_blocks//3, num_heads=num_heads,
+                norm=norm, dropout=dropout,
+                low_dimension=low_dimension,
+                causal=causal,
+                eps=eps,
+                conv=conv,local_att=local_att, intra_dropout=intra_dropout
+            )
+        self.overlap_add1d = OverlapAdd1d(chunk_size, hop_size)
         self.prelu = nn.PReLU()
         self.map = nn.Conv1d(num_features, n_sources*num_features, kernel_size=1, stride=1)
         self.gtu = GTU1d(num_features, num_features, kernel_size=1, stride=1)
@@ -1028,6 +1296,7 @@ class Separator_HC(nn.Module):
             lst[i] = F.pad(lst[i], (padding_left, padding_right))
             lst[i] = self.segment1d(lst[i]) # -> (batch_size, C, S, chunk_size)
             lst[i] = self.prelu(lst[i]) # New
+            
         lst[0] = self.norm2d1(lst[0])
         lst[0] = self.conv2d1(lst[0])# New
         lst[1] = self.norm2d2(lst[1])
@@ -1036,24 +1305,226 @@ class Separator_HC(nn.Module):
         lst[1] = self.galr2(lst[1])
         x = torch.cat(lst, dim=2)
         x = self.prelu(x) # New
-        x = self.galr_merge(x)
-        x_dct, x_stft = x.chunk(2, dim=2)
-        # lst_out = [x_dct, x_stft] if self.dual_loss else [x_dct]
+        x, _ = self.galr_merge(x)
+        if self.pool:
+            x_dct = self.merge_time(x)
+        else:
+            x_dct, _ = x.chunk(2, dim=2)
+        # TODO: MAYBE using convolution to narraow down segments
+        # map/ gtu/ iconv2d need to be independent?
+        if self.dual_loss:
+            lst_mid = [x_dct, lst[0]]
+            lst_out = []
+            for x_l in lst_mid:
+                x_l = self.prelu(x_l) # New
+                x_l = self.iconv2d(x_l)# New 
+                
+                x_l = self.overlap_add1d(x_l)
+                x_l = F.pad(x_l, (-padding_left, -padding_right))
+                x_l = self.prelu(x_l) # -> (batch_size, C, n_frames), where C = num_features
+                x_l = self.map(x_l) # -> (batch_size, n_sources*C, n_frames)
+                x_l = x_l.view(batch_size*n_sources, num_features, n_frames) # -> (batch_size*n_sources, num_features, n_frames)
+                x_l = self.gtu(x_l) # -> (batch_size*n_sources, num_features, n_frames)
+                x_l = self.mask_nonlinear(x_l) # -> (batch_size*n_sources, num_features, n_frames)
+                output = x_l.view(batch_size, n_sources, num_features, n_frames)
+                lst_out.append(output)
 
-        # for x_l in lst_out:
-        x = self.prelu(x) # New
-        x = self.iconv2d(x)# New 
+            x_stft = self.prelu(lst[1]) # New
+            x_stft = self.iconv2d2(x_stft)# New 
+            
+            x_stft = self.overlap_add1d(x_stft)
+            x_stft = F.pad(x_stft, (-padding_left, -padding_right))
+            x_stft = self.prelu(x_stft) # -> (batch_size, C, n_frames), where C = num_features
+            x_stft = self.map2(x_stft) # -> (batch_size, n_sources*C, n_frames)
+            x_stft = x_stft.view(batch_size*n_sources, num_features, n_frames) # -> (batch_size*n_sources, num_features, n_frames)
+            x_stft = self.gtu2(x_stft) # -> (batch_size*n_sources, num_features, n_frames)
+            x_stft = self.mask_nonlinear2(x_stft) # -> (batch_size*n_sources, num_features, n_frames)
+            output = x_stft.view(batch_size, n_sources, num_features, n_frames)
+            lst_out.append(output)
+
+            return lst_out
+            
+        else:
+            # x_dct += lst[0]
+            x = self.prelu(x_dct) # New
+            x = self.iconv2d(x)# New 
+            
+            x = self.overlap_add1d(x)
+            x = F.pad(x, (-padding_left, -padding_right))
+            x = self.prelu(x) # -> (batch_size, C, n_frames), where C = num_features
+            x = self.map(x) # -> (batch_size, n_sources*C, n_frames)
+            x = x.view(batch_size*n_sources, num_features, n_frames) # -> (batch_size*n_sources, num_features, n_frames)
+            x = self.gtu(x) # -> (batch_size*n_sources, num_features, n_frames)
+            x = self.mask_nonlinear(x) # -> (batch_size*n_sources, num_features, n_frames)
+            output = x.view(batch_size, n_sources, num_features, n_frames)
+            
+            return output
+
+class CustomFiLM(nn.Module):
+    def __init__(self, num_features, dims=2):
+        super().__init__()
+        if dims == 2:
+            self.affine_h = nn.Conv2d(num_features, num_features, kernel_size=1)
+            self.affine_r = nn.Conv2d(num_features, num_features, kernel_size=1)
+        else:
+            self.affine_h = nn.Conv1d(num_features, num_features, kernel_size=1)
+            self.affine_r = nn.Conv1d(num_features, num_features, kernel_size=1)
+
+    def forward(self, input1, input2):
+        """
+        Args:
+            input (batch_size, num_features, *)
+            gamma (batch_size, num_features)
+            beta (batch_size, num_features)
+        Returns:
+            output (batch_size, num_features, *)
+        """
+        gamma = self.affine_h(input2)
+        beta = self.affine_r(input2)
         
-        x = self.overlap_add1d(x)
-        x = F.pad(x, (-padding_left, -padding_right))
-        x = self.prelu(x) # -> (batch_size, C, n_frames), where C = num_features
-        x = self.map(x) # -> (batch_size, n_sources*C, n_frames)
-        x = x.view(batch_size*n_sources, num_features, n_frames) # -> (batch_size*n_sources, num_features, n_frames)
-        x = self.gtu(x) # -> (batch_size*n_sources, num_features, n_frames)
-        x = self.mask_nonlinear(x) # -> (batch_size*n_sources, num_features, n_frames)
-        output = x.view(batch_size, n_sources, num_features, n_frames)
+        return gamma * input1 + beta
+
+class ContextCrossAttention(nn.Module):
+    def __init__(
+        self,
+        num_features, num_heads,
+        dropout=0.1, norm=False, eps=EPS,
+        causal=True,
+    ):
+        super().__init__()
+        self.norm = norm
+        if self.norm:
+            self.norm2d_in = LayerNormAlongChannel(num_features, eps=eps)
+            self.norm2d_mid = LayerNormAlongChannel(num_features, eps=eps)
+            norm_name = 'cLN' if causal else 'gLM'
+            self.norm2d_out = choose_layer_norm(norm_name, num_features, causal=causal, eps=eps)
+
+        if dropout is not None:
+            self.dropout = True
+            self.dropout1d = nn.Dropout(p=dropout)
+        else:
+            self.dropout = False
+
+        self.cross_multihead_attn1_seg = nn.MultiheadAttention(num_features, num_heads)
+        self.cross_multihead_attn1_time = nn.MultiheadAttention(num_features, num_heads)
+        self.cross_multihead_attn2_seg = nn.MultiheadAttention(num_features, num_heads)
+        self.cross_multihead_attn2_time = nn.MultiheadAttention(num_features, num_heads)
+        self.film = CustomFiLM(num_features)
+    
+    def swap_and_attention(self, att_module, feat_self, feat_aux, order_in_tuple):
+        batch_size, num_features, S_self, K = feat_self.size()
+        batch_size, num_features, S_aux, K = feat_aux.size()
+
+        reverse_tuple = {v:i for i,v in enumerate(order_in_tuple)}
+        reverse_tuple = dict(sorted(reverse_tuple.items(), key=lambda item: item[0]))
+        reverse_tuple = list(reverse_tuple.values())
+
+        x_self = feat_self.permute(order_in_tuple).contiguous()
+        a, b, c, d = x_self.size()
+        x_self = x_self.view(a, -1, d)
+        residual_self = x_self
+
+        x_aux = feat_aux.permute(order_in_tuple).contiguous()
+        e, _, _, f = x_aux.size()
+        x_aux = x_aux.view(e, -1, f)
+
+        x, _ = att_module(x_self, x_aux, x_aux)
+
+        x = x.view(a, b, c, d)
+        x = x.permute(reverse_tuple)
+
+        return x
+
+
+    def forward(self, feature_main, feature_aux):
+        batch_size, num_features, S_1, K = feature_main.size()
+        batch_size, num_features, S_2, K = feature_aux.size()
+
+        x_main = self.norm2d_in(feature_main) if self.norm else feature_main  # -> (batch_size, num_features, S, K)
+        x_aux = self.norm2d_in(feature_aux) if self.norm else feature_aux  # -> (batch_size, num_features, S, K)
+
+        if S_1 != S_2:
+            x = self.swap_and_attention(self.cross_multihead_attn1_seg, x_main, x_aux,(2,0,3,1))
+            if self.dropout:
+                x = self.dropout1d(x)
+            x += x_main
+            x = self.film(x_main, x) # (bs, feat, S, K)
+            
+            x = self.norm2d_mid(x) if self.norm else x  
+
+            x = self.swap_and_attention(self.cross_multihead_attn2_seg, x_main, x,(2,0,3,1))
+            x += x_main
+        else:
+            x = self.swap_and_attention(self.cross_multihead_attn1_seg, x_main, x_aux,(3,0,2,1))
+            if self.dropout:
+                x = self.dropout1d(x)
+            x += x_main
+            x = self.film(x_main, x) # (bs, feat, S, K)
+            
+            x = self.norm2d_mid(x) if self.norm else x  
+            x = self.swap_and_attention(self.cross_multihead_attn2_seg, x_main, x,(3,0,2,1))
+            x += x_main
+
+        # # Segment-Attention
+        # x_main = x_main.permute(2,0,3,1).contiguous() # -> (S, batch_size, K, num_features)
+        # # x_main = x_main.view(S, batch_size*K, num_features) # -> (S, batch_size*K, num_features)
+        # residual_main = x_main # (S, batch_size*K, num_features)
+
+        # x = x_main
+
+        # x_aux = x_aux.permute(2,0,3,1).contiguous() # -> (S, batch_size, K, num_features)
+        # # x_aux = x_aux.view(S, batch_size*K, num_features) # -> (S, batch_size*K, num_features)
         
-        return output
+        # # x, _ = self.cross_multihead_attn1_seg(x_main, x_aux, x_aux) # (T_tgt, batch_size, num_features), (batch_size, T_tgt, T_src), where T_tgt = T_src = T
+
+        # # Timestep-Attention
+        # x = x.view(S, batch_size, K, num_features).transpose(0,2).contiguous().view(K, -1, num_features) # (K, batchsize * S, features)
+        # x_aux = x_aux.view(S, batch_size, K, num_features).transpose(0,2).contiguous().view(K, -1, num_features) 
+        # x, _ = self.cross_multihead_attn1_time(x, x_aux, x_aux) # (T_tgt, batch_size, num_features), (batch_size, T_tgt, T_src), where T_tgt = T_src = T
+
+        # x_main = x_main.view(S, batch_size, K, num_features).transpose(0,2).contiguous().view(K, -1, num_features)
+        # x += x_main # Residual (K, batchsize * S, features)
+        
+        # FiLM
+
+        # x = x.view(K, batch_size, S, num_features).permute(1, 3, 2, 0)
+        # x_main = x_main.view(K, batch_size, S, num_features).permute(1, 3, 2, 0)
+        
+        # After FiLM
+        
+        # Segment-Attention
+        # x_main = x_main.permute(2,0,3,1).contiguous() # -> (S, batch_size, K, num_features)
+        # x_main = x_main.view(S, batch_size*K, num_features) # -> (S, batch_size*K, num_features)
+
+        # x = x.permute(2,0,3,1).contiguous() # -> (S, batch_size, K, num_features)
+        # x = x.view(S, batch_size*K, num_features) # -> (S, batch_size*K, num_features)
+        
+        # x, _ = self.cross_multihead_attn2_seg(x_main, x, x) # (T_tgt, batch_size, num_features), (batch_size, T_tgt, T_src), where T_tgt = T_src = T
+
+        # x_main = x_main.view(S, batch_size, K, num_features).transpose(0,2).contiguous().view(K, -1, num_features) # (K, batchsize * S, features)
+
+
+        # Timestep-Attention
+        # x = x.view(S, batch_size, K, num_features).transpose(0,2).contiguous().view(K, -1, num_features) # (K, batchsize * S, features)
+        # x, _ = self.cross_multihead_attn2_time(x_main, x, x) # (T_tgt, batch_size, num_features), (batch_size, T_tgt, T_src), where T_tgt = T_src = T
+
+        # x_main = x_main.view(S, batch_size, K, num_features).transpose(0,2).contiguous().view(K, -1, num_features)
+
+        # x, _ = self.cross_multihead_attn2_seg(x_main, x, x) # (T_tgt, batch_size, num_features), (batch_size, T_tgt, T_src), where T_tgt = T_src = T
+
+        if self.dropout:
+            x = self.dropout1d(x)
+        x = x + x_main # -> (S, batch_size*K, num_features)'
+
+        # x = x..view(K, batch_size, S, num_features)
+
+        # x = x.view(S, batch_size, K, num_features)
+        # x = x.permute(1,3,2,0).contiguous() # -> (batch_size, num_features, S, K)
+
+        if self.norm:
+            x = self.norm2d_out(x) # -> (batch_size, num_features, S, K)
+        
+        return x
 
 def _test_separator():
     batch_size, n_frames = 2, 5

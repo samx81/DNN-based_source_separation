@@ -9,7 +9,7 @@ import torch.nn as nn
 from utils.utils import set_seed
 from dataset import WaveTrainDataset, WaveEvalDataset, TrainDataLoader, EvalDataLoader
 from new_dataset import WaveTrainDataset as NewTrainDataset
-from adhoc_driver import AdhocTrainer
+from adhoc_driver_2 import AdhocTrainer
 from models.galrnet_2 import GALRNet
 from criterion.sdr import NegSISDR, ThresholdedSNR
 from criterion.stft_loss import DEMUCSLoss, MagMSELoss, CombinePFPLoss, CombineSISNRLoss
@@ -27,8 +27,8 @@ parser.add_argument('--sr', type=int, default=10, help='Sampling rate')
 parser.add_argument('--duration', type=float, default=2, help='Duration')
 parser.add_argument('--conv', default=False, action='store_true')
 parser.add_argument('--valid_duration', type=float, default=4, help='Duration for valid dataset for avoiding memory error.')
-parser.add_argument('--enc_basis', type=str, default='trainable', choices=['Deep_DCT', 'FiLM_DCT', 'DCT','TENET','TorchSTFT','DCCRN','DCTCN','trainable','Fourier','trainableFourier','trainableFourierTrainablePhase'], help='Encoder type')
-parser.add_argument('--dec_basis', type=str, default='trainable', choices=['Deep_DCT','FiLM_DCT','DCT','TENET','TorchSTFT','DCCRN','DCTCN','trainable','Fourier','trainableFourier','trainableFourierTrainablePhase', 'pinv'], help='Decoder type')
+parser.add_argument('--enc_basis', type=str, default='trainable', choices=['time', 'FiLM_DCT', 'DCT','TENET','TorchSTFT','DCCRN','DCTCN','trainable','Fourier','trainableFourier','trainableFourierTrainablePhase'], help='Encoder type')
+parser.add_argument('--dec_basis', type=str, default='trainable', choices=['time','FiLM_DCT','DCT','TENET','TorchSTFT','DCCRN','DCTCN','trainable','Fourier','trainableFourier','trainableFourierTrainablePhase', 'pinv'], help='Decoder type')
 parser.add_argument('--no-low-dim', dest='low_dim', action='store_false')
 parser.add_argument('--noise_loss', default=False, action='store_true')
 parser.add_argument('--local_att', default=False, action='store_true')
@@ -77,7 +77,8 @@ def main(args):
     max_samples = int(args.sr * args.valid_duration)
     
     if args.new_dset:
-        train_dataset = NewTrainDataset(args.train_wav_root, args.train_list_path, samples=samples, overlap=overlap, n_sources=args.n_sources,noise_loss=args.noise_loss,use_h5py=True)
+        train_dataset = NewTrainDataset(args.train_wav_root, args.train_list_path, samples=samples, least_sample=28000, overlap=overlap, \
+            n_sources=args.n_sources,noise_loss=args.noise_loss,use_h5py=True)
     else:
         train_dataset = WaveTrainDataset(args.train_wav_root, args.train_list_path, samples=samples, overlap=overlap, n_sources=args.n_sources,noise_loss=args.noise_loss,use_h5py=True)
     

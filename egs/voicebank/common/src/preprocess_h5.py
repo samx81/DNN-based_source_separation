@@ -36,6 +36,7 @@ def package_into_h5(wav_root='data/voicebank/tr', sr=16000, noise=False):
         clean_dict = {line.split()[0]: line.split()[1] for line in ff}
 
     if noise:
+        print('Will include noise.')
         with open(noise_list_path) as f:
             ff = f.readlines()
             noise_dict = {line.split()[0]: line.split()[1] for line in ff}
@@ -55,7 +56,8 @@ def package_into_h5(wav_root='data/voicebank/tr', sr=16000, noise=False):
             f.write(print_str)
 
     # Open h5py
-    h5_file = os.path.join(wav_root, f'dataset_{sr//1000}k.h5')
+    h5_name = f'dataset_{sr//1000}k.h5' if not noise else f'dataset_{sr//1000}k_noise.h5'
+    h5_file = os.path.join(wav_root, h5_name)
     if os.path.isfile(h5_file):
         print('Dataset for h5 is already exists!')
 
@@ -70,6 +72,8 @@ def package_into_h5(wav_root='data/voicebank/tr', sr=16000, noise=False):
     len_dset = h5_file.create_dataset("len", (num_audios, ), dtype='i')
     clean_dset = h5_file.create_dataset("clean", (num_audios, max_audio_length), dtype='f', compression="gzip", fillvalue=0)
     noisy_dset = h5_file.create_dataset("noisy", (num_audios, max_audio_length), dtype='f', compression="gzip", fillvalue=0)
+    if noise:
+        noise_dset = h5_file.create_dataset("noise", (num_audios, max_audio_length), dtype='f', compression="gzip", fillvalue=0)
 
     for idx, id in tqdm(enumerate(noisy_dict.keys()),"Loading Dataset...", total=num_audios):
         T_total = len_dict[id]
@@ -83,6 +87,11 @@ def package_into_h5(wav_root='data/voicebank/tr', sr=16000, noise=False):
         wav_path = os.path.join(wav_root, noisy_dict[id])
         wave, _ = torchaudio.load(wav_path)
         noisy_dset[idx, :T_total] = wave[0]
+
+        if noise:
+            wav_path = os.path.join(wav_root, noise_dict[id])
+            wave, _ = torchaudio.load(wav_path)
+            noise_dset[idx, :T_total] = wave[0]
 
 
 # class WaveDataset(WSJ0Dataset):
@@ -293,4 +302,4 @@ def package_into_h5(wav_root='data/voicebank/tr', sr=16000, noise=False):
 #         return len(self.json_data)
 
 if __name__ == '__main__':
-    package_into_h5(wav_root='data/voicebank/tr')
+    package_into_h5(wav_root='data/voicebank/tr', noise=True)

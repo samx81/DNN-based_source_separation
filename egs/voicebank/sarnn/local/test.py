@@ -7,8 +7,10 @@ import torch.nn as nn
 
 from utils.utils import set_seed
 from dataset import WaveTestDataset, TestDataLoader
-from adhoc_driver import Tester_denoise
-from models.galrnet_imp import GALRNet, GALRNet_Res, GALRNet_Res_NoDeno, GALRNet_Denoise2
+from adhoc_driver import Tester
+# from models.dptnet import DPTNet
+# from models.custom.dptnet_tenet import DPTNet
+from models.custom.dpsarnn_net import DPSARNN_Net
 from criterion.sdr import NegSISDR
 from criterion.pit import PIT1d
 
@@ -23,9 +25,9 @@ parser.add_argument('--out_dir', type=str, default=None, help='Output directory'
 parser.add_argument('--model_path', type=str, default='./tmp/model/best.pth', help='Path for model')
 parser.add_argument('--use_cuda', type=int, default=1, help='0: Not use cuda, 1: Use cuda')
 parser.add_argument('--overwrite', type=int, default=0, help='0: NOT overwrite, 1: FORCE overwrite')
-parser.add_argument('--no_metric', default=True, action='store_false')
 parser.add_argument('--seed', type=int, default=42, help='Random seed')
-
+parser.add_argument('--no_metric', default=True, action='store_false')
+parser.add_argument('--watermark', default=True, action='store_false')
 def main(args):
     set_seed(args.seed)
     
@@ -34,7 +36,7 @@ def main(args):
     
     loader = TestDataLoader(test_dataset, batch_size=1, shuffle=False)
     
-    model = GALRNet_Denoise2.build_model(args.model_path)
+    model = DPSARNN_Net.build_model(args.model_path)
     print(model)
     print("# Parameters: {}".format(model.num_parameters))
     
@@ -56,7 +58,7 @@ def main(args):
     
     # pit_criterion = PIT1d(criterion, n_sources=args.n_sources)
     
-    tester = Tester_denoise(model, loader, criterion, args)
+    tester = Tester(model, loader, criterion, args)
     tester.run()
     
     

@@ -7,7 +7,7 @@ import torch.nn as nn
 
 from utils.utils import set_seed
 from dataset import WaveTestDataset, TestDataLoader
-from adhoc_driver import Tester
+from adhoc_driver_2 import Tester
 from models.galrnet_2 import GALRNet
 from criterion.sdr import NegSISDR
 from criterion.pit import PIT1d
@@ -33,7 +33,7 @@ def main(args):
     test_dataset = WaveTestDataset(args.test_wav_root, args.test_list_path, n_sources=args.n_sources)
     print("Test dataset includes {} samples.".format(len(test_dataset)))
     
-    loader = TestDataLoader(test_dataset, batch_size=1, shuffle=False)
+    loader = TestDataLoader(test_dataset, batch_size=1, shuffle=False, num_workers=4)
     
     model = GALRNet.build_model(args.model_path)
     print(model)

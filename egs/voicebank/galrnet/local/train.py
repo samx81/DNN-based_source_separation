@@ -28,8 +28,10 @@ parser.add_argument('--sr', type=int, default=10, help='Sampling rate')
 parser.add_argument('--duration', type=float, default=2, help='Duration')
 parser.add_argument('--conv', default=False, action='store_true')
 parser.add_argument('--valid_duration', type=float, default=4, help='Duration for valid dataset for avoiding memory error.')
-parser.add_argument('--enc_basis', type=str, default='trainable', choices=['Deep_DCT', 'FiLM_DCT', 'DCT','TENET','TorchSTFT','DCCRN','DCTCN','trainable','Fourier','trainableFourier','trainableFourierTrainablePhase'], help='Encoder type')
-parser.add_argument('--dec_basis', type=str, default='trainable', choices=['Deep_DCT','FiLM_DCT','DCT','TENET','TorchSTFT','DCCRN','DCTCN','trainable','Fourier','trainableFourier','trainableFourierTrainablePhase', 'pinv'], help='Decoder type')
+parser.add_argument('--enc_basis', type=str, default='trainable', choices=['in_dct_learn','Deep_DCT', 'FiLM_DCT', 'DCT_Learn', 'DCT','TENET',
+'TorchSTFT','DCCRN','DCTCN','trainable','Fourier','trainableFourier','trainableFourierTrainablePhase'], help='Encoder type')
+parser.add_argument('--dec_basis', type=str, default='trainable', choices=['in_dct_learn','Deep_DCT','FiLM_DCT', 'DCT_Learn','DCT','TENET',
+'TorchSTFT','DCCRN','DCTCN','trainable','Fourier','trainableFourier','trainableFourierTrainablePhase', 'pinv'], help='Decoder type')
 parser.add_argument('--no-low-dim', dest='low_dim', action='store_false')
 parser.add_argument('--noise_loss', default=False, action='store_true')
 parser.add_argument('--local_att', default=False, action='store_true')
@@ -54,7 +56,7 @@ parser.add_argument('--causal', type=int, default=0, help='Causality')
 parser.add_argument('--n_sources', type=int, default=None, help='# speakers')
 parser.add_argument('--criterion', type=str, default='sisdr', choices=['l2_sisnr','l2loss',\
     'ttf1', 'ttf2', 'ttf3','pfp_sisnr','pfp_l2','pfp_thsnr','sisdr', 'this_sisdr', \
-    'threshold_snr','demucs_l1','demucs_mse','mse'], help='Criterion')
+    'pfp_snr_l2','threshold_snr','demucs_l1','demucs_mse','mse'], help='Criterion')
 parser.add_argument('--optimizer', type=str, default='adam', choices=['sgd', 'adam', 'rmsprop'], help='Optimizer, [sgd, adam, rmsprop]')
 parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate. Default: 1e-3')
 parser.add_argument('--weight_decay', type=float, default=0, help='Weight decay (L2 penalty). Default: 0')
@@ -72,6 +74,7 @@ parser.add_argument('--worker', type=int, default=16, help='Random seed')
 parser.add_argument('--handcraft', type=int)
 parser.add_argument('--intra_dropout', default=False, action='store_true')
 parser.add_argument('--new_dset', default=False, action='store_true')
+parser.add_argument("--mask", help="Mask", nargs='?', type=str, const='zero')
 def main(args):
     set_seed(args.seed)
     
@@ -80,9 +83,12 @@ def main(args):
     max_samples = int(args.sr * args.valid_duration)
     
     if args.new_dset:
-        train_dataset = NewTrainDataset(args.train_wav_root, args.train_list_path, samples=samples, overlap=overlap, n_sources=args.n_sources,noise_loss=args.noise_loss,use_h5py=True)
+        print(f'Mask usage: {args.mask}')
+        train_dataset = NewTrainDataset(args.train_wav_root, args.train_list_path, samples=samples, overlap=overlap, \
+            n_sources=args.n_sources, noise_loss=args.noise_loss, use_h5py=True, mask= args.mask, least_sample=28000)
     else:
-        train_dataset = WaveTrainDataset(args.train_wav_root, args.train_list_path, samples=samples, overlap=overlap, n_sources=args.n_sources,noise_loss=args.noise_loss,use_h5py=True)
+        train_dataset = WaveTrainDataset(args.train_wav_root, args.train_list_path, samples=samples, overlap=overlap, \
+            n_sources=args.n_sources,noise_loss=args.noise_loss,use_h5py=True)
     
     valid_dataset = WaveEvalDataset(args.valid_wav_root, args.valid_list_path, max_samples=max_samples, n_sources=args.n_sources)
     print("Training dataset includes {} samples.".format(len(train_dataset)))
@@ -174,6 +180,12 @@ def main(args):
         # criterion = MyNegSISNR()
         criterion = DEMUCSLoss('l2')
         criterion = CombinePFPLoss(criterion, 1000)
+    elif args.criterion == 'pfp_snr_l2':
+        # criterion = MyNegSISNR()
+        criterion = DEMUCSLoss('l2')
+        # criterion = nn.MSELoss()
+        criterion = CombineSISNRLoss(criterion, 0.5)
+        criterion = CombinePFPLoss(criterion, 2000)
     else:
         raise ValueError("Not support criterion {}".format(args.criterion))
     

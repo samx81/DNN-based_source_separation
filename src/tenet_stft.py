@@ -98,11 +98,12 @@ class STFT(nn.Module):
         return output
         
 class ISTFT(nn.Module):
-    def __init__(self, fftsize, window_size, stride, win_type="default", trainable=False, online=False):
+    def __init__(self, fftsize, window_size, stride, win_type="default", trainable=False, online=False, center=False):
         super(ISTFT, self).__init__()
         self.fftsize = fftsize
         self.window_size = window_size
         self.stride = stride
+        self.center = center
 
         gain_ifft = (2.0*self.stride) / self.window_size
 
@@ -159,6 +160,7 @@ class ISTFT(nn.Module):
         stft_stride = self.stride
         stft_window_size = self.window_size
         stft_fft_size = self.fftsize
+        
 
         pad_real_dc = th.tensor(np.zeros([batch_size, 1, frame_size]),dtype=th.float,device=th.device(input.device))
         pad_imag_dc = th.tensor(np.zeros([batch_size, 1, frame_size]),dtype=th.float,device=th.device(input.device))
@@ -171,7 +173,9 @@ class ISTFT(nn.Module):
         time_sin = self.decoder_im(imag_part)
 
         output = time_cos - time_sin
-
+        if self.center:
+            pad = int((stft_window_size) // 2)
+            output = output[..., pad:-pad]
 
         return output
 

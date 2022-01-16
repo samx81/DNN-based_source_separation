@@ -277,15 +277,15 @@ class CombinePFPLoss(torch.nn.Module):
 class CombineSISNRLoss(torch.nn.Module):
     """DEMUCS loss module."""
 
-    def __init__(self, loss, weight=0.5):
+    def __init__(self, loss, aux_weight=0.5):
         """Initialize STFT loss module."""
         super(CombineSISNRLoss, self).__init__()
-        self.loss = loss
-        self.weight = weight
+        self.aux_loss = loss
+        self.weight = aux_weight
         
         self.snr_loss = NegSISDR()
 
-    def forward(self, x, y, latent_x, latent_y):
+    def forward(self, x, y, latent_x=None, latent_y=None,):
         """Calculate forward propagation.
         Args:
             x (Tensor): Predicted signal (B, T). Est
@@ -295,8 +295,11 @@ class CombineSISNRLoss(torch.nn.Module):
             Tensor: Log STFT magnitude loss value.
         """
         loss = (1 - self.weight) * self.snr_loss(x, y)
-        t_loss =self.loss(latent_x , latent_y)
-        loss += self.weight * t_loss
+        if latent_x:
+            aux_loss =self.aux_loss(latent_x , latent_y)
+        else:
+            aux_loss = self.aux_loss(x , y)
+        loss += self.weight * aux_loss
 
 
         return loss
