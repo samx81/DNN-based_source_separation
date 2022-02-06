@@ -3,10 +3,9 @@ import time
 import torch
 import torch.nn as nn
 
-from tqdm import tqdm
-
 from utils.utils import draw_loss_curve
-from driver import TrainerBase, TesterBase, cal_sisnr
+from driver import TrainerBase, TesterBase
+from tqdm import tqdm
 
 class AdhocTrainer(TrainerBase):
     def __init__(self, model, loader, pit_criterion, optimizer, args):
@@ -33,12 +32,13 @@ class AdhocTrainer(TrainerBase):
             train_loss, valid_loss = self.run_one_epoch(epoch)
             end = time.time()
             
-            print("[Epoch {}/{}] loss (train): {:.5f}, loss (valid): {:.5f}, {:.3f} [sec]".format(epoch+1, self.epochs, train_loss, valid_loss, end - start), flush=True)
-            
+            print("[Epoch {}/{}] loss (train): {:.5f}, loss (valid): {:.5f}, {:.3f} [sec], best_loss:{:.5f}, imp{}".format(
+                                epoch+1, self.epochs, train_loss, valid_loss, end - start, self.best_loss, self.no_improvement), flush=True)            
             self.train_loss[epoch] = train_loss
             self.valid_loss[epoch] = valid_loss
 
             if valid_loss < self.best_loss:
+                print(f"save best model, last: {self.best_loss}, current:{valid_loss}", flush=True)
                 self.best_loss = valid_loss
                 self.no_improvement = 0
                 model_path = os.path.join(self.model_dir, "best.pth")
@@ -55,7 +55,7 @@ class AdhocTrainer(TrainerBase):
             self.save_model(epoch, model_path)
             
             save_path = os.path.join(self.loss_dir, "loss.png")
-            draw_loss_curve(train_loss=self.train_loss[:epoch+1], valid_loss=self.valid_loss[:epoch+1], save_path=save_path)
+            draw_loss_curve(train_loss=self.train_loss[:epoch + 1], valid_loss=self.valid_loss[:epoch + 1], save_path=save_path)
 
             if self.no_improvement >= 10:
                 print("Stop training.")
@@ -69,19 +69,20 @@ class AdhocTrainer(TrainerBase):
         
         train_loss = 0
         n_train_batch = len(self.train_loader)
-        t = tqdm(enumerate(self.train_loader), leave=False,
-                    total=(len(self.train_loader)//self.train_loader.batch_size))
+        total_steps = (len(self.train_loader)//self.train_loader.batch_size)
+        t = tqdm(enumerate(self.train_loader), leave=False, total=total_steps)
+        
         # for idx, (mixture, sources) in enumerate(self.train_loader):
         for idx, (mixture, sources) in t:
-
             if self.use_cuda:
                 mixture = mixture.cuda()
                 sources = sources.cuda()
             
-            estimated_sources, _ = self.model(mixture)
-            # loss = -torch.mean(cal_sisnr(estimated_sources[:,0], torch.squeeze(sources,dim=1)))
-
+            # estimated_sources = self.model(mixture)
+            # loss, _ = self.pit_criterion(estimated_sources, sources)
+            estimated_sources, latent = self.model(mixture)
             loss = self.criterion(estimated_sources[:,0], sources[:,0])
+
             
             self.optimizer.zero_grad()
             loss.backward()
@@ -93,9 +94,11 @@ class AdhocTrainer(TrainerBase):
             self.optimizer.step()
             
             train_loss += loss.item()
+            
             t.set_postfix_str(f'loss: {loss.item():.5f}')
-            if (idx + 1)%100 == 0:
-                t.write("[Epoch {}/{}] iter {}/{} loss: {:.5f}".format(epoch+1, self.epochs, idx+1, n_train_batch, loss.item()))
+            
+            # if (idx + 1)%100 == 0:
+            #     t.write("[Epoch {}/{}] iter {}/{} loss: {:.5f}".format(epoch+1, self.epochs, idx+1, total_steps, loss.item()))
         
         train_loss /= n_train_batch
         
@@ -124,17 +127,17 @@ class AdhocTrainer(TrainerBase):
                 if lr == prev_lr:
                     break
                 else:
-                    print("Learning rate: {} -> {}".format(prev_lr, lr))
+                    print("Learning rate: {} -> {}".format(prev_lr, lr), flush=True)
             param_group['lr'] = lr
 
         self.step = step + 1
     
     def save_model(self, epoch, model_path='./tmp.pth'):
         if isinstance(self.model, nn.DataParallel):
-            config = self.model.module.get_package()
+            config = self.model.module.get_config()
             config['state_dict'] = self.model.module.state_dict()
         else:
-            config = self.model.get_package()
+            config = self.model.get_config()
             config['state_dict'] = self.model.state_dict()
             
         config['optim_dict'] = self.optimizer.state_dict()

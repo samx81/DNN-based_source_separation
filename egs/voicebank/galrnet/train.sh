@@ -9,7 +9,7 @@ worker=16
 new_dset=
 
 n_sources=2
-sr_k=8 #sr_k=8 means sampling rate is 8kHz. Choose from 8kHz or 16kHz.
+sr_k=16 #sr_k=8 means sampling rate is 8kHz. Choose from 8kHz or 16kHz.
 sr=${sr_k}000
 duration=4
 valid_duration=10

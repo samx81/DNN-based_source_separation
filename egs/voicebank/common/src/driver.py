@@ -16,7 +16,7 @@ from utils.utils import draw_loss_curve
 from criterion.pit import pit
 from criterion.distance import L2Loss
 from criterion.stft_loss import CombineSISNRLoss
-
+from models.galrnet import GALRNet_SO
 BITS_PER_SAMPLE_WSJ0 = 16
 MIN_PESQ = -0.5
 
@@ -220,8 +220,10 @@ class TrainerBase:
             if self.use_cuda:
                 mixture = mixture.cuda()
                 sources = sources.cuda()
-
-            estimated_sources, latent = self.model(mixture)
+            if (isinstance(self.model, nn.DataParallel) and isinstance(self.model.module, GALRNet_SO)) or isinstance(self.model, GALRNet_SO):
+                estimated_sources, latent, sources = self.model(mixture, sources)
+            else:
+                estimated_sources, latent = self.model(mixture)
 
             if L2Loss == self.criterion:
                 with torch.no_grad():

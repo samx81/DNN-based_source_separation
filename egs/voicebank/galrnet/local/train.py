@@ -8,9 +8,9 @@ import torch.nn as nn
 
 from utils.utils import set_seed
 from dataset import WaveTrainDataset, WaveEvalDataset, TrainDataLoader, EvalDataLoader
-from new_dataset import WaveTrainDataset as NewTrainDataset
+from new_dataset import WaveTrainDataset as NewTrainDataset, masktwice_collatefn
 from adhoc_driver import AdhocTrainer
-from models.galrnet import GALRNet
+from models.galrnet import GALRNet, GALRNet_SO
 from criterion.sdr import NegSISDR, ThresholdedSNR
 from criterion.stft_loss import DEMUCSLoss, MagMSELoss, \
     CombinePFPLoss, CombineSISNRLoss, T_TF_Loss
@@ -82,10 +82,14 @@ def main(args):
     overlap = samples//2
     max_samples = int(args.sr * args.valid_duration)
     
-    if args.new_dset:
+    if args.new_dset :
         print(f'Mask usage: {args.mask}')
-        train_dataset = NewTrainDataset(args.train_wav_root, args.train_list_path, samples=samples, overlap=overlap, \
-            n_sources=args.n_sources, noise_loss=args.noise_loss, use_h5py=True, mask= args.mask, least_sample=28000)
+        if args.mask == 'zero':
+            train_dataset = NewTrainDataset(args.train_wav_root, args.train_list_path, samples=samples, overlap=overlap, \
+                n_sources=args.n_sources, noise_loss=args.noise_loss, use_h5py=True, mask= args.mask, least_sample=28000, speed_perturb=True, shift=True)
+        else:
+            train_dataset = NewTrainDataset(args.train_wav_root, args.train_list_path, samples=samples, overlap=overlap, \
+                n_sources=args.n_sources, noise_loss=args.noise_loss, use_h5py=True, mask= args.mask, least_sample=28000)
     else:
         train_dataset = WaveTrainDataset(args.train_wav_root, args.train_list_path, samples=samples, overlap=overlap, \
             n_sources=args.n_sources,noise_loss=args.noise_loss,use_h5py=True)
@@ -97,25 +101,41 @@ def main(args):
     loader = {}
     dl_workers = args.worker
     print('Dataloader workers:', dl_workers)
-    loader['train'] = TrainDataLoader(train_dataset, batch_size=args.batch_size, num_workers=dl_workers,shuffle=True)
+    if args.mask == 'zerotwice':
+        loader['train'] = TrainDataLoader(train_dataset, batch_size=args.batch_size, num_workers=dl_workers,shuffle=True, collate_fn=masktwice_collatefn)
+    else:
+        loader['train'] = TrainDataLoader(train_dataset, batch_size=args.batch_size, num_workers=dl_workers,shuffle=True)
     loader['valid'] = EvalDataLoader(valid_dataset, batch_size=1, num_workers=2, shuffle=False)
     if not args.enc_nonlinear:
         args.enc_nonlinear = None
     if args.max_norm is not None and args.max_norm == 0:
         args.max_norm = None
 
+    if args.mask == 'spliceout_tf':
+        model = GALRNet_SO(
+            args.n_bases, args.kernel_size, stride=args.stride, enc_basis=args.enc_basis, dec_basis=args.dec_basis, enc_nonlinear=args.enc_nonlinear, 
+            window_fn=args.window_fn,enc_onesided=args.enc_onesided, enc_return_complex=args.enc_return_complex,
+            sep_hidden_channels=args.sep_hidden_channels, 
+            sep_chunk_size=args.sep_chunk_size, sep_hop_size=args.sep_hop_size, sep_down_chunk_size=args.sep_down_chunk_size, sep_num_blocks=args.sep_num_blocks,
+            sep_num_heads=args.sep_num_heads, sep_norm=args.sep_norm, sep_dropout=args.sep_dropout,
+            mask_nonlinear=args.mask_nonlinear,
+            causal=args.causal, conv=args.conv,
+            n_sources=args.n_sources, handcraft=args.handcraft,
+            low_dimension=args.low_dim, local_att=args.local_att,intra_dropout=args.intra_dropout
+        )
     # print(f'uses low_dim :{args.low_dim}')
-    model = GALRNet(
-        args.n_bases, args.kernel_size, stride=args.stride, enc_basis=args.enc_basis, dec_basis=args.dec_basis, enc_nonlinear=args.enc_nonlinear, 
-        window_fn=args.window_fn,enc_onesided=args.enc_onesided, enc_return_complex=args.enc_return_complex,
-        sep_hidden_channels=args.sep_hidden_channels, 
-        sep_chunk_size=args.sep_chunk_size, sep_hop_size=args.sep_hop_size, sep_down_chunk_size=args.sep_down_chunk_size, sep_num_blocks=args.sep_num_blocks,
-        sep_num_heads=args.sep_num_heads, sep_norm=args.sep_norm, sep_dropout=args.sep_dropout,
-        mask_nonlinear=args.mask_nonlinear,
-        causal=args.causal, conv=args.conv,
-        n_sources=args.n_sources, handcraft=args.handcraft,
-        low_dimension=args.low_dim, local_att=args.local_att,intra_dropout=args.intra_dropout
-    )
+    else:
+        model = GALRNet(
+            args.n_bases, args.kernel_size, stride=args.stride, enc_basis=args.enc_basis, dec_basis=args.dec_basis, enc_nonlinear=args.enc_nonlinear, 
+            window_fn=args.window_fn,enc_onesided=args.enc_onesided, enc_return_complex=args.enc_return_complex,
+            sep_hidden_channels=args.sep_hidden_channels, 
+            sep_chunk_size=args.sep_chunk_size, sep_hop_size=args.sep_hop_size, sep_down_chunk_size=args.sep_down_chunk_size, sep_num_blocks=args.sep_num_blocks,
+            sep_num_heads=args.sep_num_heads, sep_norm=args.sep_norm, sep_dropout=args.sep_dropout,
+            mask_nonlinear=args.mask_nonlinear,
+            causal=args.causal, conv=args.conv,
+            n_sources=args.n_sources, handcraft=args.handcraft,
+            low_dimension=args.low_dim, local_att=args.local_att,intra_dropout=args.intra_dropout
+        )
     print(model)
     print("# Parameters: {}".format(model.num_parameters))
 
@@ -179,7 +199,7 @@ def main(args):
     elif args.criterion == 'pfp_l2':
         # criterion = MyNegSISNR()
         criterion = DEMUCSLoss('l2')
-        criterion = CombinePFPLoss(criterion, 1000)
+        criterion = CombinePFPLoss(criterion, 2000)
     elif args.criterion == 'pfp_snr_l2':
         # criterion = MyNegSISNR()
         criterion = DEMUCSLoss('l2')

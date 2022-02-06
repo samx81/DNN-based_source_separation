@@ -1,43 +1,53 @@
 #!/bin/bash
 
+args=$@
+
 exp_dir="./exp"
 continue_from=""
 tag=""
+new_dset=
 
 n_sources=2
-sr_k=8 # sr_k=8 means sampling rate is 8kHz. Choose from 8kHz or 16kHz.
+sr_k=16 # sr_k=8 means sampling rate is 8kHz. Choose from 8kHz or 16kHz.
 sr=${sr_k}000
 duration=4
 valid_duration=10
 max_or_min='min'
 
-train_wav_root="data/voicebank/tr_sub_sub"
+train_wav_root="data/voicebank/tr"
 valid_wav_root="data/voicebank/cv"
 
 train_list_path="../../../dataset/wsj0-mix/${n_sources}speakers/mix_${n_sources}_spk_${max_or_min}_tr_mix"
 valid_list_path="../../../dataset/wsj0-mix/${n_sources}speakers/mix_${n_sources}_spk_${max_or_min}_cv_mix"
 
 # Encoder & decoder
+basis="trainable"
 enc_basis='trainable' # choose from 'trainable','Fourier', or 'trainableFourier'
 dec_basis='trainable' # choose from 'trainable','Fourier', 'trainableFourier', or 'pinv'
 enc_nonlinear='relu' # enc_nonlinear is activated if enc_basis='trainable' and dec_basis!='pinv'
 window_fn='' # window_fn is activated if enc_basis='Fourier' or dec_basis='Fourier'
-N=64
+
+mask=
+
+echo $basis
+
+N=512
 L=16 # L corresponds to the window length (samples) in this script.
 
 # Separator
-F=64
-H=128
+F=128
+# H=128
 K=100
 P=50
-B=6
-d_ff=128
+B=5
+d_ff=256
 h=8
 causal=0
 sep_norm=1
 sep_nonlinear='relu'
+# sep_dropout=1e-1
 sep_dropout=0
-mask_nonlinear='relu'
+mask_nonlinear='tanh'
 
 # Criterion
 criterion='sisdr'
@@ -50,7 +60,7 @@ warmup_steps=4000
 weight_decay=0
 max_norm=5 # 0 is handled as no clipping
 
-batch_size=1
+batch_size=16
 epochs=100
 
 use_cuda=1
@@ -60,6 +70,12 @@ gpu_id="0"
 
 . ./path.sh
 . parse_options.sh || exit 1
+
+enc_basis=$basis 
+dec_basis=$basis
+
+echo $basis
+echo $enc_basis
 
 prefix=""
 
@@ -88,9 +104,13 @@ fi
 
 time_stamp=`TZ=UTC-9 date "+%Y%m%d-%H%M%S"`
 
+echo "$0 ${args}" > "${log_dir}/train_${time_stamp}.log"
+
 export CUDA_VISIBLE_DEVICES="${gpu_id}"
 
 train.py \
+${new_dset:+"--new_dset"} \
+${mask:+"--mask"} ${mask:+"$mask"} \
 --train_wav_root ${train_wav_root} \
 --valid_wav_root ${valid_wav_root} \
 --train_list_path ${train_list_path} \

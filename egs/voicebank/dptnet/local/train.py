@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
 import argparse
@@ -7,10 +7,14 @@ import torch.nn as nn
 
 from utils.utils import set_seed
 from dataset import WaveTrainDataset, WaveEvalDataset, TrainDataLoader, EvalDataLoader
+from new_dataset import WaveTrainDataset as NewTrainDataset, masktwice_collatefn
 from adhoc_driver import AdhocTrainer
-from models.dptnet import DPTNet
+# from models.dptnet import DPTNet
+from models.custom.dptnet_tenet import DPTNet
 from criterion.sdr import NegSISDR
 from criterion.pit import PIT1d
+from criterion.stft_loss import DEMUCSLoss, MagMSELoss, CombinePFPLoss, CombineSISNRLoss
+from driver import MyNegSISNR
 
 parser = argparse.ArgumentParser(description="Training of Conv-TasNet")
 
@@ -21,8 +25,8 @@ parser.add_argument('--valid_list_path', type=str, default=None, help='Path for 
 parser.add_argument('--sr', type=int, default=10, help='Sampling rate')
 parser.add_argument('--duration', type=float, default=2, help='Duration')
 parser.add_argument('--valid_duration', type=float, default=4, help='Duration for valid dataset for avoiding memory error.')
-parser.add_argument('--enc_basis', type=str, default='trainable', choices=['trainable','Fourier','trainableFourier'], help='Encoder type')
-parser.add_argument('--dec_basis', type=str, default='trainable', choices=['trainable','Fourier','trainableFourier', 'pinv'], help='Decoder type')
+parser.add_argument('--enc_basis', type=str, default='trainable', choices=['DCT','TENET','trainable','Fourier','trainableFourier'], help='Encoder type')
+parser.add_argument('--dec_basis', type=str, default='trainable', choices=['DCT','TENET','trainable','Fourier','trainableFourier', 'pinv'], help='Decoder type')
 parser.add_argument('--enc_nonlinear', type=str, default=None, help='Non-linear function of encoder')
 parser.add_argument('--window_fn', type=str, default='hamming', help='Window function')
 parser.add_argument('--n_basis', '-N', type=int, default=64, help='# basis')
@@ -40,7 +44,7 @@ parser.add_argument('--sep_nonlinear', type=str, default='relu', help='Non-linea
 parser.add_argument('--sep_dropout', type=float, default=0, help='Dropout')
 parser.add_argument('--mask_nonlinear', type=str, default='sigmoid', help='Non-linear function of mask estiamtion')
 parser.add_argument('--n_sources', type=int, default=None, help='# speakers')
-parser.add_argument('--criterion', type=str, default='sisdr', choices=['sisdr'], help='Criterion')
+parser.add_argument('--criterion', type=str, default='sisdr', choices=['demucs_mse','sisdr','pfp_sisnr','sisnr'], help='Criterion')
 parser.add_argument('--optimizer', type=str, default='adam', choices=['sgd', 'adam', 'rmsprop'], help='Optimizer, [sgd, adam, rmsprop]')
 parser.add_argument('--k1', type=float, default=2e-1, help='Learning rate during warm up. Default: 2e-1')
 parser.add_argument('--k2', type=float, default=4e-4, help='Learning rate after warm up. Default: 4e-4')
@@ -57,6 +61,9 @@ parser.add_argument('--continue_from', type=str, default=None, help='Resume trai
 parser.add_argument('--use_cuda', type=int, default=1, help='0: Not use cuda, 1: Use cuda')
 parser.add_argument('--overwrite', type=int, default=0, help='0: NOT overwrite, 1: FORCE overwrite')
 parser.add_argument('--seed', type=int, default=42, help='Random seed')
+parser.add_argument('--worker', type=int, default=16, help='Random seed')
+parser.add_argument('--new_dset', default=False, action='store_true')
+parser.add_argument("--mask", help="Mask", nargs='?', type=str, const='zero')
 
 def main(args):
     set_seed(args.seed)
@@ -65,13 +72,29 @@ def main(args):
     overlap = samples//2
     max_samples = int(args.sr * args.valid_duration)
     
-    train_dataset = WaveTrainDataset(args.train_wav_root, args.train_list_path, samples=samples, overlap=overlap, n_sources=args.n_sources)
+    # train_dataset = WaveTrainDataset(args.train_wav_root, args.train_list_path, samples=samples, overlap=overlap, n_sources=args.n_sources,noise_loss=args.noise_loss,use_h5py=False)
+
+    # train_dataset = WaveTrainDataset(args.train_wav_root, args.train_list_path, samples=samples, overlap=overlap, n_sources=args.n_sources, use_h5py=True)
+    if args.new_dset:
+        print(f'Mask usage: {args.mask}')
+        train_dataset = NewTrainDataset(args.train_wav_root, args.train_list_path, samples=samples, overlap=overlap, \
+            n_sources=args.n_sources, noise_loss=args.noise_loss, use_h5py=True, mask= args.mask, least_sample=28000, speed_perturb=True, shift=True)
+    else:
+        train_dataset = WaveTrainDataset(args.train_wav_root, args.train_list_path, samples=samples, overlap=overlap, \
+            n_sources=args.n_sources,noise_loss=args.noise_loss,use_h5py=False)
+            
     valid_dataset = WaveEvalDataset(args.valid_wav_root, args.valid_list_path, max_samples=max_samples, n_sources=args.n_sources)
     print("Training dataset includes {} samples.".format(len(train_dataset)))
     print("Valid dataset includes {} samples.".format(len(valid_dataset)))
     
     loader = {}
-    loader['train'] = TrainDataLoader(train_dataset, batch_size=args.batch_size,num_workers=8, shuffle=True)
+    dl_workers = args.worker
+    print('Dataloader workers:', dl_workers)
+    if args.mask in ['zerotwice', 'TENET']:
+        loader['train'] = TrainDataLoader(train_dataset, batch_size=args.batch_size, num_workers=dl_workers,shuffle=True, collate_fn=masktwice_collatefn)
+    else:
+        loader['train'] = TrainDataLoader(train_dataset, batch_size=args.batch_size, num_workers=dl_workers,shuffle=True)
+   # loader['train'] = TrainDataLoader(train_dataset, batch_size=args.batch_size,num_workers=16, shuffle=True)
     loader['valid'] = EvalDataLoader(valid_dataset, batch_size=1,num_workers=8, shuffle=False)
     
     if not args.enc_nonlinear:
@@ -120,6 +143,13 @@ def main(args):
     # Criterion
     if args.criterion == 'sisdr':
         criterion = NegSISDR()
+    elif args.criterion == 'sisnr':
+        criterion = MyNegSISNR()
+    elif args.criterion == 'pfp_sisnr':
+        criterion = MyNegSISNR()
+        criterion = CombinePFPLoss(criterion, 2000)
+    elif args.criterion == 'demucs_mse':
+        criterion = DEMUCSLoss('l2')
     else:
         raise ValueError("Not support criterion {}".format(args.criterion))
     
