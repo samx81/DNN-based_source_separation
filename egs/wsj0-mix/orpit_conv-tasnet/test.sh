@@ -6,7 +6,7 @@ tag=""
 n_sources_train='2+3'
 n_sources=2
 sr_k=8 # sr_k=8 means sampling rate is 8kHz. Choose from 8kHz or 16kHz.
-sr=${sr_k}000
+sample_rate=${sr_k}000
 duration=4
 max_or_min='min'
 
@@ -50,7 +50,8 @@ max_norm=5
 finetune=1 # If you don't want to use fintuned model, set `finetune=0`.
 model_choice="best"
 
-batch_size=4
+batch_size_train=4
+batch_size_finetune=4
 epochs_train=100
 epochs_finetune=10
 
@@ -74,13 +75,13 @@ if [ ${enc_basis} = 'Fourier' -o ${enc_basis} = 'trainableFourier' -o ${enc_basi
 fi
 
 if [ -z "${tag}" ]; then
-    save_dir="${exp_dir}/${n_sources_train}mix/sr${sr_k}k_${max_or_min}/${duration}sec/${enc_basis}-${dec_basis}/${criterion}/N${N}_L${L}_B${B}_H${H}_Sc${Sc}_P${P}_X${X}_R${R}/${prefix}dilated${dilated}_separable${separable}_causal${causal}_${sep_nonlinear}_norm${sep_norm}_mask-${mask_nonlinear}/b${batch_size}_e${epochs_train}_${optimizer}-lr${lr}-decay${weight_decay}/seed${seed_train}"
+    save_dir="${exp_dir}/${n_sources_train}mix/sr${sr_k}k_${max_or_min}/${duration}sec/${enc_basis}-${dec_basis}/${criterion}/N${N}_L${L}_B${B}_H${H}_Sc${Sc}_P${P}_X${X}_R${R}/${prefix}dilated${dilated}_separable${separable}_causal${causal}_${sep_nonlinear}_norm${sep_norm}_mask-${mask_nonlinear}/b${batch_size_train}_e${epochs_train}_${optimizer}-lr${lr}-decay${weight_decay}/seed${seed_train}"
 else
     save_dir="${exp_dir}/${tag}"
 fi
 
 if [ ${finetune} -eq 1 ]; then
-    save_dir="${save_dir}/finetune/e${epochs_finetune}/seed${seed_finetune}"
+    save_dir="${save_dir}/finetune/b${batch_size_finetune}_e${epochs_finetune}/seed${seed_finetune}"
 fi
 
 model_dir="${save_dir}/model"
@@ -99,7 +100,7 @@ export CUDA_VISIBLE_DEVICES="${gpu_id}"
 test.py \
 --test_wav_root ${wav_root} \
 --test_list_path ${test_list_path} \
---sr ${sr} \
+--sample_rate ${sample_rate} \
 --n_sources ${n_sources} \
 --criterion ${criterion} \
 --out_dir "${out_dir}" \

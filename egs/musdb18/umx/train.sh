@@ -9,8 +9,8 @@ target='vocals'
 duration=6
 valid_duration=100
 
-musdb18_root="../../../dataset/musdb18"
-sr=44100
+musdb18_root="../../../dataset/MUSDB18"
+sample_rate=44100
 
 window_fn='hann'
 fft_size=4096
@@ -49,7 +49,7 @@ gpu_id="0"
 . parse_options.sh || exit 1
 
 if [ -z "${tag}" ]; then
-    save_dir="${exp_dir}/sr${sr}/${sources}/${duration}sec/${criterion}/stft${fft_size}-${hop_size}_${window_fn}-window/H${hidden_channels}_N${num_layers}_dropout${dropout}_causal${causal}"
+    save_dir="${exp_dir}/sr${sample_rate}/${sources}/${duration}sec/${criterion}/stft${fft_size}-${hop_size}_${window_fn}-window/H${hidden_channels}_N${num_layers}_dropout${dropout}_causal${causal}"
     if [ ${samples_per_epoch} -gt 0 ]; then
         save_dir="${save_dir}/b${batch_size}_e${epochs}-s${samples_per_epoch}_${optimizer}-lr${lr}-decay${weight_decay}_clip${max_norm}/seed${seed}"
     else
@@ -62,7 +62,19 @@ fi
 model_dir="${save_dir}/model/${target}"
 loss_dir="${save_dir}/loss/${target}"
 sample_dir="${save_dir}/sample/${target}"
+config_dir="${save_dir}/config"
 log_dir="${save_dir}/log/${target}"
+
+if [ ! -e "${config_dir}" ]; then
+    mkdir -p "${config_dir}"
+fi
+
+augmentation_dir=`dirname ${augmentation_path}`
+augmentation_name=`basename ${augmentation_path}`
+
+if [ ! -e "${config_dir}/${augmentation_name}" ]; then
+    cp "${augmentation_path}" "${config_dir}/${augmentation_name}"
+fi
 
 if [ ! -e "${log_dir}" ]; then
     mkdir -p "${log_dir}"
@@ -74,7 +86,7 @@ export CUDA_VISIBLE_DEVICES="${gpu_id}"
 
 train.py \
 --musdb18_root ${musdb18_root} \
---sr ${sr} \
+--sample_rate ${sample_rate} \
 --duration ${duration} \
 --valid_duration ${valid_duration} \
 --window_fn "${window_fn}" \

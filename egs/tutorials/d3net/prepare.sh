@@ -1,7 +1,7 @@
 #!/bin/bash
 
 model_id=""
-model_name="improved"
+model_name="paper"
 file="model"
 
 . ./path.sh
@@ -9,9 +9,10 @@ file="model"
 
 echo "Download D3Net. (Dataset: MUSDB18, sampling frequency 44.1kHz)"
 
-model_ids=(
-    ["improved"]="1XL5RIoyIEnATH2zIO0BOHujWo7UnxwuY"
-    ["paper"]="1UXtrJ0eo__Gonwqe9FoJaPQY4kFg_6aE"
+declare -A model_ids=(
+    ["paper"]="1We9ea5qe3Hhcw28w1XZl2KKogW9wdzKF"
+    ["nnabla"]="1B4e4e-8-T1oKzSg8WJ8RIbZ99QASamPB"
+    ["improved"]="1pce_DYaeDYMvsKHmDAvL1Cww_1I3pnhr"
 )
 
 if [ -z "${model_id}" ] ; then

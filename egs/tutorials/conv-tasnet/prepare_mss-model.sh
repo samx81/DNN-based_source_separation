@@ -9,9 +9,9 @@ file="model"
 
 echo "Download Conv-TasNet. (Dataset: MUSDB18, sampling frequency 44.1kHz)"
 
-model_ids=(
-    ["sr44100_L20"]="1pA-jt_709cq8Pl6TAix3Yf2ei6UNPldn"
-    ["sr44100_L64"]="1yQTdGu2jigAHotJJ7JAQcfqedACCP40t"
+declare -A model_ids=(
+    ["sr44100_L20"]="1C4uv2z0w1s4rudIMaErLyEccNprJQWSZ"
+    ["sr44100_L64"]="1paXNGgH8m0kiJTQnn1WH-jEIurCKXwtw"
 )
 
 if [ -z "${model_id}" ] ; then

@@ -1,14 +1,13 @@
 # Example of outputs
-I trained D3Net and share the outputs. The networks are all trained by default setting except for random scaling. See `config/improved/augmentation-*.yaml`.
+I trained D3Net and share the outputs.
 - You have to unzip `config.zip`, `log.zip`, and `loss.zip`.
-- You can download pretrained models from [https://drive.google.com/file/d/1UXtrJ0eo__Gonwqe9FoJaPQY4kFg_6aE/view?usp=sharing](https://drive.google.com/file/d/1UXtrJ0eo__Gonwqe9FoJaPQY4kFg_6aE/view?usp=sharing), which includes `drums/last.pth`, `drums/best.pth`, `bass/last.pth`, ..., `vocals/best.pth`.
-- You can download output JSON files from [https://drive.google.com/file/d/1GU2CBgHKrRcFJZHzwckcdHAgVA7xqRGx/view?usp=sharing](https://drive.google.com/file/d/1GU2CBgHKrRcFJZHzwckcdHAgVA7xqRGx/view?usp=sharing).
+- You can download pretrained models from [https://drive.google.com/file/d/1We9ea5qe3Hhcw28w1XZl2KKogW9wdzKF/view?usp=sharing](https://drive.google.com/file/d/1We9ea5qe3Hhcw28w1XZl2KKogW9wdzKF/view?usp=sharing) that includes `bass/last.pth`, `bass/best.pth`, ...`vocals/best.pth`.
+- You can download output JSON files from [https://drive.google.com/file/d/1hrhUekc-BJbVeZw6xdTPU2Gg3Dael5vM/view?usp=sharing](https://drive.google.com/file/d/1hrhUekc-BJbVeZw6xdTPU2Gg3Dael5vM/view?usp=sharing).
 
 ## Results
-SDR [dB] (median of median SDR of each song computed by `museval`)
-| Model | Vocals | Drums | Bass | Other | Accompaniment | Average | Note |
-| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| D3Net w/o dilation | - | - | - | - | - | - | - |
-| D3Net standard dilation | - | - | - | - | - | - | - |
-| D3Net | 6.58 | 6.46 | 5.12 | 4.54 | 13.06 | 5.68 | Epoch is chosen by validation loss. |
-| D3Net | 6.63 | 6.40 | 5.24 | 4.58 | 13.24 | 5.71 | After 50 epochs. |
+- SDR [dB] (median of median SDR of each song computed by `museval`)
+
+| Model | Sampling rate [Hz] | Bass | Drums | Other | Vocals | Accompaniment | Average | Note |
+| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| D3Net | 44100 | 5.26 | 6.34 | 4.54 | 6.88 | 13.35 | 5.76 | Epoch is chosen by validation loss. |
+| D3Net | 44100 | 5.27 | 6.38 | 4.57 | 6.89 | 13.34 | 5.77 | After 100 epochs. |

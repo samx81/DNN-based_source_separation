@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from utils.utils_tasnet import choose_layer_norm
+from utils.tasnet import choose_layer_norm
 from models.dprnn import IntraChunkRNN as LocallyRecurrentBlock
 from performer_pytorch import FastAttention
 
@@ -218,12 +218,12 @@ class GloballyAttentiveBlockBase(nn.Module):
         Returns:
             output (length, dimension): positional encording
         """
-        assert dimension%2 == 0, "dimension is expected even number but given odd number."
+        assert dimension % 2 == 0, "dimension is expected even number but given odd number."
 
         position = torch.arange(length) # (length,)
         position = position.unsqueeze(dim=1) # (length, 1)
-        index = torch.arange(dimension//2) / dimension # (dimension//2,)
-        index = index.unsqueeze(dim=0) # (1, dimension//2)
+        index = torch.arange(dimension//2) / dimension # (dimension // 2,)
+        index = index.unsqueeze(dim=0) # (1, dimension // 2)
         indices = position / base**index
         output = torch.cat([torch.sin(indices), torch.cos(indices)], dim=1)
         
@@ -249,7 +249,7 @@ class GloballyAttentiveBlock(GloballyAttentiveBlockBase):
             self.dropout = False
         
         if self.norm:
-            norm_name = 'cLN' if causal else 'gLM'
+            norm_name = 'cLN' if causal else 'gLN'
             self.norm2d_out = choose_layer_norm(norm_name, num_features, causal=causal, eps=eps)
         
     def forward(self, input):
@@ -289,7 +289,7 @@ class GloballyAttentiveBlock(GloballyAttentiveBlockBase):
             x = self.dropout1d(x)
         x = x + residual # -> (S, batch_size*K, num_features)
         x = x.view(S, batch_size, K, num_features)
-        x = x.permute(1,3,0,2).contiguous() # -> (batch_size, num_features, S, K)
+        x = x.permute(1, 3, 0, 2).contiguous() # -> (batch_size, num_features, S, K)
 
         if self.norm:
             x = self.norm2d_out(x) # -> (batch_size, num_features, S, K)
@@ -374,7 +374,7 @@ class LowDimensionGloballyAttentiveBlock(GloballyAttentiveBlockBase):
             x = self.dropout1d(x)
         x = x + residual # -> (S, batch_size*Q, num_features)
         x = x.view(S, batch_size, Q, num_features)
-        x = x.permute(1,3,0,2).contiguous() # -> (batch_size, num_features, S, Q)
+        x = x.permute(1, 3, 0, 2).contiguous() # -> (batch_size, num_features, S, Q)
 
         # x_after_att = x.clone()
 
@@ -474,8 +474,8 @@ class LayerNormAlongChannel(nn.Module):
         Returns:
             output (batch_size, num_features, *)
         """
-        n_dim = input.dim()
-        dims = list(range(n_dim))
+        n_dims = input.dim()
+        dims = list(range(n_dims))
         permuted_dims = dims[0:1] + dims[2:] + dims[1:2]
         x = input.permute(*permuted_dims)
         x = self.norm(x)

@@ -25,7 +25,7 @@ class TrainerBase:
         self._reset(args)
     
     def _reset(self, args):
-        self.sr = args.sr
+        self.sample_rate = args.sample_rate
         self.n_sources = args.n_sources
         self.max_norm = args.max_norm
         
@@ -76,6 +76,12 @@ class TrainerBase:
             self.best_loss = float('infinity')
             self.prev_loss = float('infinity')
             self.no_improvement = 0
+        
+        # For save_model
+        if hasattr(args, 'save_normalized'):
+            self.save_normalized = args.save_normalized
+        else:
+            self.save_normalized = False
     
     def run(self):
         for epoch in range(self.start_epoch, self.epochs):
@@ -185,14 +191,25 @@ class TrainerBase:
                     save_dir = os.path.join(self.sample_dir, titles[0])
                     os.makedirs(save_dir, exist_ok=True)
                     save_path = os.path.join(save_dir, "mixture.wav")
-                    torchaudio.save(save_path, mixture, sample_rate=self.sr, bits_per_sample=BITS_PER_SAMPLE_MUSDB18)
+
+                    if self.save_normalized:
+                        norm = torch.abs(mixture).max()
+                        mixture = mixture / norm
+                    
+                    torchaudio.save(save_path, mixture, sample_rate=self.sample_rate, bits_per_sample=BITS_PER_SAMPLE_MUSDB18)
                     
                     save_dir = os.path.join(self.sample_dir, titles[0], "epoch{}".format(epoch + 1))
                     os.makedirs(save_dir, exist_ok=True)
+
                     for source_idx, estimated_source in enumerate(estimated_sources):
                         target = self.valid_loader.dataset.target[source_idx]
                         save_path = os.path.join(save_dir, "{}.wav".format(target))
-                        torchaudio.save(save_path, estimated_source, sample_rate=self.sr, bits_per_sample=BITS_PER_SAMPLE_MUSDB18)
+
+                        if self.save_normalized:
+                            norm = torch.abs(estimated_source).max()
+                            estimated_source = estimated_source / norm
+                        
+                        torchaudio.save(save_path, estimated_source, sample_rate=self.sample_rate, bits_per_sample=BITS_PER_SAMPLE_MUSDB18)
         
         valid_loss /= n_valid
         
@@ -229,7 +246,7 @@ class TesterBase:
         self._reset(args)
         
     def _reset(self, args):
-        self.sr = args.sr
+        self.sample_rate = args.sample_rate
         self.n_sources = args.n_sources
         
         self.out_dir = args.out_dir
@@ -247,43 +264,77 @@ class TesterBase:
         else:
             self.model.load_state_dict(config['state_dict'])
     
+        # For save_model
+        if hasattr(args, 'save_normalized'):
+            self.save_normalized = args.save_normalized
+        else:
+            self.save_normalized = False
+    
     def run(self):
         raise NotImplementedError("Implement `run` in sub-class.")
 
 class EvaluaterBase:
     def __init__(self, args):
         self._reset(args)
-    
-    def _reset(self, args):
-        self.target = [
-            'bass', 'drums', 'other', 'vocals', 'accompaniment'
-        ]
-        self.mus = musdb.DB(root=args.musdb18_root, subsets="test", is_wav=args.is_wav)
-        self.estimated_mus = musdb.DB(root=args.estimated_musdb18_root, subsets="test", is_wav=True)
-        self.json_dir = args.json_dir
 
-        os.makedirs(self.json_dir, exist_ok=True)
+    def _reset(self, args):
+        self.sample_rate = args.sample_rate
+        self.sources = args.sources
+
+        self.musdb18_root = args.musdb18_root
+
+        self.estimates_dir = args.estimates_dir
+        self.json_dir = args.json_dir
+        
+        if self.json_dir is not None:
+            self.json_dir = os.path.abspath(args.json_dir)
+            os.makedirs(self.json_dir, exist_ok=True)
+        
+        self.use_norbert = args.use_norbert
+        
+        if self.use_norbert:
+            try:
+                import norbert
+            except:
+                raise ImportError("Cannot import norbert.")
     
     def run(self):
+        mus = musdb.DB(root=self.musdb18_root, subsets='test', is_wav=True)
+        
         results = museval.EvalStore(frames_agg='median', tracks_agg='median')
 
-        for track, estimated_track in zip(self.mus.tracks, self.estimated_mus.tracks):
-            scores = self.run_one_track(track, estimated_track)
+        for track in mus.tracks:
+            name = track.name
+            
+            estimates = {}
+            estimated_accompaniment = 0
+
+            for target in self.sources:
+                estimated_path = os.path.join(self.estimates_dir, name, "{}.wav".format(target))
+                estimated, _ = torchaudio.load(estimated_path)
+                estimated = estimated.numpy().transpose(1, 0)
+                estimates[target] = estimated
+                if target != 'vocals':
+                    estimated_accompaniment += estimated
+
+            estimates['accompaniment'] = estimated_accompaniment
+
+            # Evaluate using museval
+            scores = museval.eval_mus_track(track, estimates, output_dir=self.json_dir)
             results.add_track(scores)
-        
+
+            print(name)
+            print(scores, flush=True)
+
         print(results)
-    
-    def run_one_track(self, track, estimated_track):
-        estimates = {}
 
-        for _target in self.target:
-            estimates[_target] = estimated_track.targets[_target].audio
-        
-        scores = museval.eval_mus_track(
-            track, estimates, output_dir=self.json_dir
-        )
+    def apply_multichannel_wiener_filter(self, mixture, estimated_sources_amplitude, channels_first=True, eps=EPS):
+        if self.use_norbert:
+            estimated_sources = apply_multichannel_wiener_filter_norbert(mixture, estimated_sources_amplitude, channels_first=channels_first, eps=eps)
+        else:
+            estimated_sources = apply_multichannel_wiener_filter_torch(mixture, estimated_sources_amplitude, channels_first=channels_first, eps=eps)
 
-        return scores
+        return estimated_sources
 
 def apply_multichannel_wiener_filter_norbert(mixture, estimated_sources_amplitude, iteration=1, channels_first=True, eps=EPS):
     """

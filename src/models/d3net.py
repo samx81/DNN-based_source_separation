@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.modules.utils import _pair
 
-from utils.utils_d3net import choose_layer_norm
+from utils.d3net import choose_layer_norm
 from models.transform import BandSplit
 from models.glu import GLU2d
 from models.d2net import D2Block, D2BlockFixedDilation
@@ -16,6 +16,15 @@ See https://arxiv.org/abs/2010.01733
 
 FULL = 'full'
 EPS = 1e-12
+SAMPLE_RATE_MUSDB18 = 44100
+__pretrained_model_ids__ = {
+    "musdb18": {
+        SAMPLE_RATE_MUSDB18: {
+            "paper": "1We9ea5qe3Hhcw28w1XZl2KKogW9wdzKF",
+            "nnabla": "1B4e4e-8-T1oKzSg8WJ8RIbZ99QASamPB"
+        }
+    }
+}
 
 class ParallelD3Net(nn.Module):
     def __init__(self, modules):
@@ -111,8 +120,8 @@ class D3Net(nn.Module):
         self.glu2d = GLU2d(growth_rate_final, in_channels, kernel_size=(1,1), stride=(1,1))
         self.relu2d = nn.ReLU()
 
-        self.in_scale, self.in_bias = nn.Parameter(torch.Tensor(sum(sections),)), nn.Parameter(torch.Tensor(sum(sections),))
-        self.out_scale, self.out_bias = nn.Parameter(torch.Tensor(sum(sections),)), nn.Parameter(torch.Tensor(sum(sections),))
+        self.scale_in, self.bias_in = nn.Parameter(torch.Tensor(sum(sections),), requires_grad=True), nn.Parameter(torch.Tensor(sum(sections),), requires_grad=True)
+        self.scale_out, self.bias_out = nn.Parameter(torch.Tensor(sum(sections),), requires_grad=True), nn.Parameter(torch.Tensor(sum(sections),), requires_grad=True)
 
         self.in_channels, self.num_features = in_channels, num_features
         self.growth_rate = growth_rate
@@ -121,11 +130,13 @@ class D3Net(nn.Module):
         self.num_d2blocks = num_d2blocks
         self.dilated, self.norm, self.nonlinear = dilated, norm, nonlinear
         self.depth = depth
+        
         self.growth_rate_final = growth_rate_final
         self.kernel_size_final = kernel_size_final
         self.dilated_final = dilated_final
         self.depth_final = depth_final
         self.norm_final, self.nonlinear_final = norm_final, nonlinear_final
+
         self.eps = eps
         
         self._reset_parameters()
@@ -139,7 +150,6 @@ class D3Net(nn.Module):
         """
         bands, sections = self.bands, self.sections
         n_bins = input.size(2)
-        eps = self.eps
 
         if sum(sections) == n_bins:
             x_valid, x_invalid = input, None
@@ -147,14 +157,14 @@ class D3Net(nn.Module):
             sections = [sum(sections), n_bins - sum(sections)]
             x_valid, x_invalid = torch.split(input, sections, dim=2)
 
-        x_valid = (x_valid - self.in_bias.unsqueeze(dim=1)) / (torch.abs(self.in_scale.unsqueeze(dim=1)) + eps)
-
+        x_valid = self.transform_affine_in(x_valid)
         x = self.band_split(x_valid)
-
         x_bands = []
+
         for band, x_band in zip(bands, x):
             x_band = self.net[band](x_band)
             x_bands.append(x_band)
+        
         x_bands = torch.cat(x_bands, dim=2)
     
         x_full = self.net[FULL](x_valid)
@@ -164,7 +174,7 @@ class D3Net(nn.Module):
         x = self.d2block(x)
         x = self.norm2d(x)
         x = self.glu2d(x)
-        x = self.out_scale.unsqueeze(dim=1) * x + self.out_bias.unsqueeze(dim=1)
+        x = self.transform_affine_out(x)
         x = self.relu2d(x)
 
         _, _, _, n_frames = x.size()
@@ -182,11 +192,22 @@ class D3Net(nn.Module):
 
         return output
     
+    def transform_affine_in(self, input):
+        eps = self.eps
+        output = (input - self.bias_in.unsqueeze(dim=1)) / (torch.abs(self.scale_in.unsqueeze(dim=1)) + eps)
+
+        return output
+
+    def transform_affine_out(self, input):
+        output = self.scale_out.unsqueeze(dim=1) * input + self.bias_out.unsqueeze(dim=1)
+        
+        return output
+    
     def _reset_parameters(self):
-        self.in_scale.data.fill_(1)
-        self.in_bias.data.zero_()
-        self.out_scale.data.fill_(1)
-        self.out_bias.data.zero_()
+        self.scale_in.data.fill_(1)
+        self.bias_in.data.zero_()
+        self.scale_out.data.fill_(1)
+        self.bias_out.data.zero_()
     
     def get_config(self):
         config = {
@@ -314,6 +335,38 @@ class D3Net(nn.Module):
         if load_state_dict:
             model.load_state_dict(config['state_dict'])
         
+        return model
+    
+    @classmethod
+    def build_from_pretrained(cls, root="./pretrained", target='vocals', quiet=False, load_state_dict=True, **kwargs):
+        import os
+        
+        from utils.utils import download_pretrained_model_from_google_drive
+
+        task = kwargs.get('task')
+
+        if not task in __pretrained_model_ids__:
+            raise KeyError("Invalid task ({}) is specified.".format(task))
+            
+        pretrained_model_ids_task = __pretrained_model_ids__[task]
+        
+        if task == 'musdb18':
+            sample_rate = kwargs.get('sr') or kwargs.get('sample_rate') or SAMPLE_RATE_MUSDB18
+            config = kwargs.get('config') or "nnabla"
+            model_choice = kwargs.get('model_choice') or 'best'
+
+            model_id = pretrained_model_ids_task[sample_rate][config]
+            download_dir = os.path.join(root, cls.__name__, task, "sr{}".format(sample_rate), config)
+        else:
+            raise NotImplementedError("Not support task={}.".format(task))
+        
+        model_path = os.path.join(download_dir, "model", target, "{}.pth".format(model_choice))
+
+        if not os.path.exists(model_path):
+            download_pretrained_model_from_google_drive(model_id, download_dir, quiet=quiet)
+        
+        model = cls.build_model(model_path, load_state_dict=load_state_dict)
+
         return model
     
     @property
@@ -589,6 +642,85 @@ class Decoder(nn.Module):
 
         return output
 
+class DownSampleD3Block(nn.Module):
+    """
+    D3Block + down sample
+    """
+    def __init__(self, in_channels, growth_rate, kernel_size=(3,3), down_scale=(2,2), num_blocks=None, dilated=True, norm=True, nonlinear='relu', depth=None, eps=EPS):
+        super().__init__()
+
+        self.down_scale = _pair(down_scale)
+
+        self.d3block = D3Block(in_channels, growth_rate, kernel_size, num_blocks=num_blocks, dilated=dilated, norm=norm, nonlinear=nonlinear, depth=depth, eps=eps)
+        self.downsample2d = nn.AvgPool2d(kernel_size=self.down_scale, stride=self.down_scale)
+
+        self.out_channels = self.d3block.out_channels
+    
+    def forward(self, input):
+        """
+        Args:
+            input (batch_size, in_channels, H, W)
+        Returns:
+            output:
+                (batch_size, growth_rate[-1], H_down, W_down) if type(growth_rate) is list<int>
+                or (batch_size, growth_rate, H_down, W_down) if type(growth_rate) is int
+                where H_down = H // down_scale[0] and W_down = W // down_scale[1]
+            skip:
+                (batch_size, growth_rate[-1], H, W) if type(growth_rate) is list<int>
+                or (batch_size, growth_rate, H, W) if type(growth_rate) is int
+        """
+        _, _, n_bins, n_frames = input.size()
+
+        Kh, Kw = self.down_scale
+        Ph, Pw = (Kh - n_bins % Kh) % Kh, (Kw - n_frames % Kw) % Kw
+        padding_top = Ph // 2
+        padding_bottom = Ph - padding_top
+        padding_left = Pw // 2
+        padding_right = Pw - padding_left
+
+        input = F.pad(input, (padding_left, padding_right, padding_top, padding_bottom))
+        
+        x = self.d3block(input)
+        skip = x
+        skip = F.pad(skip, (-padding_left, -padding_right, -padding_top, -padding_bottom))
+
+        output = self.downsample2d(x)
+
+        return output, skip
+
+class UpSampleD3Block(nn.Module):
+    """
+    D3Block + up sample
+    """
+    def __init__(self, in_channels, skip_channels, growth_rate, kernel_size=(2,2), up_scale=(2,2), num_blocks=None, dilated=True, norm=True, nonlinear='relu', depth=None, eps=EPS):
+        super().__init__()
+
+        self.norm2d = choose_layer_norm('BN', in_channels, n_dims=2, eps=eps) # nn.BatchNorm2d
+        self.upsample2d = nn.ConvTranspose2d(in_channels, in_channels, kernel_size=up_scale, stride=up_scale)
+        self.d3block = D3Block(in_channels + skip_channels, growth_rate, kernel_size, num_blocks=num_blocks, dilated=dilated, norm=norm, nonlinear=nonlinear, depth=depth, eps=eps)
+
+        self.out_channels = self.d3block.out_channels
+    
+    def forward(self, input, skip):
+        x = self.norm2d(input)
+        x = self.upsample2d(x)
+
+        _, _, H, W = x.size()
+        _, _, H_skip, W_skip = skip.size()
+        padding_height = H - H_skip
+        padding_width = W - W_skip
+        padding_top = padding_height // 2
+        padding_bottom = padding_height - padding_top
+        padding_left = padding_width // 2
+        padding_right = padding_width - padding_left
+
+        x = F.pad(x, (-padding_left, -padding_right, -padding_top, -padding_bottom))
+        x = torch.cat([x, skip], dim=1)
+
+        output = self.d3block(x)
+
+        return output
+
 class D3Block(nn.Module):
     def __init__(self, in_channels, growth_rate, kernel_size=(3,3), num_blocks=None, dilated=True, norm=True, nonlinear='relu', depth=None, eps=EPS):
         """
@@ -661,120 +793,46 @@ class D3Block(nn.Module):
         self.out_channels = growth_rate[-1]
 
         net = []
-        _in_channels = in_channels
+        
 
         for idx in range(num_blocks):
+            if idx == 0:
+                _in_channels = in_channels
+            else:
+                _in_channels = growth_rate[idx - 1]
             _out_channels = sum(growth_rate[idx:])
+
             if naive_dilated:
                 dilation = 2**idx
                 d2block = D2BlockFixedDilation(_in_channels, _out_channels, kernel_size=kernel_size, dilation=dilation, norm=norm[idx], nonlinear=nonlinear[idx], depth=depth, eps=eps)
             else:
                 d2block = D2Block(_in_channels, _out_channels, kernel_size=kernel_size, dilated=dilated[idx], norm=norm[idx], nonlinear=nonlinear[idx], depth=depth, eps=eps)
             net.append(d2block)
-            _in_channels = growth_rate[idx]
-
-        self.net = nn.ModuleList(net)
+        
+        self.net = nn.Sequential(*net)
     
     def forward(self, input):
         """
         Args:
             input: (batch_size, in_channels, H, W)
         Returns:
-            output: (batch_size, out_channels, H, W), where `out_channels` is determined by ... 
+            output: (batch_size, out_channels, H, W), where `out_channels` is determined by `growth_rate`.
         """
         growth_rate, num_blocks = self.growth_rate, self.num_blocks
 
-        x = input
-        x_residual = 0
-
         for idx in range(num_blocks):
+            if idx == 0:
+                x = input
+                x_residual = 0
+            else:
+                _in_channels = growth_rate[idx - 1]
+                sections = [_in_channels, sum(growth_rate[idx:])]
+                x, x_residual = torch.split(x_residual, sections, dim=1)
+            
             x = self.net[idx](x)
             x_residual = x_residual + x
-            
-            in_channels = growth_rate[idx]
-            stacked_channels = sum(growth_rate[idx+1:])
-            sections = [in_channels, stacked_channels]
-
-            if idx != num_blocks - 1:
-                x, x_residual = torch.split(x_residual, sections, dim=1)
         
         output = x_residual
-
-        return output
-
-class DownSampleD3Block(nn.Module):
-    """
-    D3Block + down sample
-    """
-    def __init__(self, in_channels, growth_rate, kernel_size=(3,3), down_scale=(2,2), num_blocks=None, dilated=True, norm=True, nonlinear='relu', depth=None, eps=EPS):
-        super().__init__()
-
-        self.down_scale = _pair(down_scale)
-
-        self.d3block = D3Block(in_channels, growth_rate, kernel_size, num_blocks=num_blocks, dilated=dilated, norm=norm, nonlinear=nonlinear, depth=depth, eps=eps)
-        self.downsample2d = nn.AvgPool2d(kernel_size=self.down_scale, stride=self.down_scale)
-
-        self.out_channels = self.d3block.out_channels
-    
-    def forward(self, input):
-        """
-        Args:
-            input (batch_size, in_channels, H, W)
-        Returns:
-            output:
-                (batch_size, growth_rate[-1], H_down, W_down) if type(growth_rate) is list<int>
-                or (batch_size, growth_rate, H_down, W_down) if type(growth_rate) is int
-                where H_down = H // down_scale[0] and W_down = W // down_scale[1]
-            skip:
-                (batch_size, growth_rate[-1], H, W) if type(growth_rate) is list<int>
-                or (batch_size, growth_rate, H, W) if type(growth_rate) is int
-        """
-        _, _, n_bins, n_frames = input.size()
-
-        Kh, Kw = self.down_scale
-        Ph, Pw = (Kh - n_bins % Kh) % Kh, (Kw - n_frames % Kw) % Kw
-        padding_top = Ph // 2
-        padding_bottom = Ph - padding_top
-        padding_left = Pw // 2
-        padding_right = Pw - padding_left
-
-        input = F.pad(input, (padding_left, padding_right, padding_top, padding_bottom))
-        
-        x = self.d3block(input)
-        skip = x
-        skip = F.pad(skip, (-padding_left, -padding_right, -padding_top, -padding_bottom))
-
-        output = self.downsample2d(x)
-
-        return output, skip
-
-class UpSampleD3Block(nn.Module):
-    def __init__(self, in_channels, skip_channels, growth_rate, kernel_size=(2,2), up_scale=(2,2), num_blocks=None, dilated=True, norm=True, nonlinear='relu', depth=None, eps=EPS):
-        super().__init__()
-
-        self.norm2d = choose_layer_norm('BN', in_channels, n_dims=2, eps=eps) # nn.BatchNorm2d
-        self.upsample2d = nn.ConvTranspose2d(in_channels, in_channels, kernel_size=up_scale, stride=up_scale)
-        self.d3block = D3Block(in_channels + skip_channels, growth_rate, kernel_size, num_blocks=num_blocks, dilated=dilated, norm=norm, nonlinear=nonlinear, depth=depth, eps=eps)
-
-        self.out_channels = self.d3block.out_channels
-    
-    def forward(self, input, skip):
-        x = self.norm2d(input)
-        x = self.upsample2d(x)
-
-        _, _, H, W = x.size()
-        _, _, H_skip, W_skip = skip.size()
-        padding_height = H - H_skip
-        padding_width = W - W_skip
-        padding_top = padding_height//2
-        padding_bottom = padding_height - padding_top
-        padding_left = padding_width//2
-        padding_right = padding_width - padding_left
-
-        x = F.pad(x, (-padding_left, -padding_right, -padding_top, -padding_bottom))
-        x = torch.cat([x, skip], dim=1)
-
-        output = self.d3block(x)
 
         return output
 
