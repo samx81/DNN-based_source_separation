@@ -18,6 +18,311 @@ import dense_dilated
 
 EPS=1e-12
 
+class GALRNet_SO(nn.Module):
+    def __init__(
+        self,
+        n_basis, kernel_size, stride=None, enc_basis=None, dec_basis=None,
+        sep_hidden_channels=128,
+        sep_chunk_size=100, sep_hop_size=50, sep_down_chunk_size=None, sep_num_blocks=6,
+        sep_num_heads=8, sep_norm=True, sep_dropout=0.1,
+        mask_nonlinear='relu',
+        causal=True,
+        n_sources=2,
+        low_dimension=True,
+        eps=EPS,
+        **kwargs
+    ):
+        super().__init__()
+        
+        if stride is None:
+            stride = kernel_size // 2
+        
+        assert kernel_size % stride == 0, "kernel_size is expected divisible by stride"
+        
+        # Encoder-decoder
+        self.n_basis = n_basis
+        self.kernel_size, self.stride = kernel_size, stride
+        self.enc_basis, self.dec_basis = enc_basis, dec_basis
+        print(enc_basis, dec_basis)
+        if enc_basis == 'trainable' and not dec_basis == 'pinv':    
+            self.enc_nonlinear = kwargs['enc_nonlinear']
+        else:
+            self.enc_nonlinear = None
+
+        # needed to implement 'Complex' 10/12    
+        
+        if enc_basis in ['Fourier', 'trainableFourier', 'trainableFourierTrainablePhase'] or dec_basis in ['Fourier', 'trainableFourier', 'trainableFourierTrainablePhase']:
+            self.window_fn = kwargs['window_fn']
+            self.enc_onesided, self.enc_return_complex = kwargs['enc_onesided'], kwargs['enc_return_complex']
+        else:
+            self.window_fn = None
+            self.enc_onesided, self.enc_return_complex = None, None
+        
+        
+        print(f'window_fn:{self.window_fn}')
+        # Separator configuration
+        self.sep_hidden_channels = sep_hidden_channels
+        self.sep_chunk_size, self.sep_hop_size, self.sep_down_chunk_size = sep_chunk_size, sep_hop_size, sep_down_chunk_size
+        self.sep_num_blocks = sep_num_blocks
+        self.sep_num_heads = sep_num_heads
+        self.sep_norm = sep_norm
+        self.sep_dropout = sep_dropout
+        self.low_dimension = low_dimension
+        
+        self.causal = causal
+        self.sep_norm = sep_norm
+        self.mask_nonlinear = mask_nonlinear
+        
+        
+        self.n_sources = n_sources
+        self.eps = eps
+        
+        # Network configuration
+        if 'TorchSTFT' in [enc_basis, dec_basis]:
+            # self.n_basis = n_basis = 8192
+            encoder, decoder = Naked_Encoder(feat_type='fft',causal=causal), Naked_Decoder(feat_type='fft')
+        elif 'DCT' in [enc_basis, dec_basis]:
+            # self.n_basis = n_basis = 8192
+            encoder, decoder = Naked_Encoder(feat_type='dct',causal=causal), Naked_Decoder(feat_type='dct')
+        elif 'DCT_Learn' in [enc_basis, dec_basis]:
+            # self.n_basis = n_basis = 8192
+            encoder, decoder = CosineEncoder(n_basis, kernel_size, stride, trainable=True), CosineDecoder(n_basis, kernel_size, stride, trainable=True)
+        elif 'in_dct_learn' in [enc_basis, dec_basis]:
+            # self.n_basis = n_basis = 8192
+            encoder, decoder = CosineEncoder(n_basis, kernel_size, stride, trainable=True, center=True), Naked_Decoder(feat_type='dct')
+        elif 'TENET' in [enc_basis, dec_basis]:
+            # self.n_basis = n_basis = 8192
+            encoder, decoder = Naked_Encoder(feat_type='TENET',causal=causal), Naked_Decoder(feat_type='TENET')
+        else:
+            encoder, decoder = choose_filterbank(n_basis, kernel_size=kernel_size, stride=stride, enc_basis=enc_basis, dec_basis=dec_basis, **kwargs)
+        
+        self.conv = conv = kwargs.get('conv', None)
+        self.handcraft = kwargs.get('handcraft', None)
+        self.local_att = kwargs.get('local_att', None)
+        self.intra_dropout = kwargs.get('intra_dropout', None)
+        print(kwargs)
+
+        self.encoder = encoder
+        if self.handcraft is 1 or self.handcraft == True:# and enc_basis in ['TorchSTFT', 'TENET', 'DCT', 'FiLM_DCT']:
+            self.separator = Separator_HC( # Separator_HC Separator_NoSegment Separator_NoSegment_HC
+                n_basis, hidden_channels=sep_hidden_channels,
+                chunk_size=sep_chunk_size, hop_size=sep_hop_size, down_chunk_size=sep_down_chunk_size, num_blocks=sep_num_blocks,
+                num_heads=sep_num_heads, norm=sep_norm, dropout=sep_dropout, mask_nonlinear=mask_nonlinear,
+                low_dimension=low_dimension,
+                causal=causal,
+                n_sources=n_sources,
+                eps=eps, conv=conv, local_att=self.local_att, intra_dropout=self.intra_dropout
+            )
+        else:
+            self.separator = Separator(
+                n_basis, hidden_channels=sep_hidden_channels,
+                chunk_size=sep_chunk_size, hop_size=sep_hop_size, down_chunk_size=sep_down_chunk_size, num_blocks=sep_num_blocks,
+                num_heads=sep_num_heads, norm=sep_norm, dropout=sep_dropout, mask_nonlinear=mask_nonlinear,
+                low_dimension=low_dimension,
+                causal=causal,
+                n_sources=n_sources,
+                eps=eps, conv=conv,local_att=self.local_att, intra_dropout=self.intra_dropout
+            )
+        self.decoder = decoder
+        
+        self.num_parameters = self._get_num_parameters()
+        
+        # Load custom child code
+        self.load()
+        
+    def load(self):
+        pass
+
+    def spliceout_fn(self, spec_noisy, spec_clean,interval_num, max_interval):
+        # interval_num = N, max_interval = T
+        spec_shape = spec_noisy[0].shape # tau
+        spec_len = spec_shape[-1]
+        for i in range(spec_noisy.shape[0]):
+            mask = torch.ones(spec_shape, dtype=bool)
+            for j in range(interval_num):
+                remove_length = torch.randint(max_interval, size=(1,))
+                start = torch.randint(int(spec_len - remove_length) , size=(1,))
+                mask[:,start : start + remove_length] = False
+            timestep_left = torch.count_nonzero(mask[0].int())
+            noisy = spec_noisy[i]
+            noisy = noisy[mask].view(-1, timestep_left)
+
+            clean = spec_clean[i]
+            clean = clean[mask].view(-1, timestep_left)
+
+            padding = (spec_len - noisy.shape[-1])
+            padding_r = padding//2 if (padding//2) *2 == padding else padding//2 +1
+            noisy = F.pad(noisy, (padding//2, padding_r))
+            spec_noisy[i] = noisy
+
+            clean = F.pad(clean, (padding//2, padding_r))
+            spec_clean[i] = clean
+        return spec_noisy, spec_clean
+        # noisy, clean = spec_noisy[mask], spec_clean[mask]
+        # return noisy, clean
+
+
+    def forward(self, input, sources=None):
+        if sources is not None:
+            output, latent, s = self.extract_latent(input, sources)
+        
+            return output, latent, s
+        else:
+            output, latent= self.extract_latent(input)
+            return output, latent
+        
+    def extract_latent(self, input, sources=None):
+        """
+        Args:
+            input (batch_size, 1, T)
+        Returns:
+            output (batch_size, n_sources, T)
+            latent (batch_size, n_sources, n_basis, T'), where T' = (T-K)//S+1
+        """
+        n_sources = self.n_sources
+        n_basis = self.n_basis
+        kernel_size, stride = self.kernel_size, self.stride
+        
+        batch_size, C_in, T = input.size()
+        
+        assert C_in == 1, "input.size() is expected (?, 1, ?), but given {}".format(input.size())
+        ## TODO: 改這邊的 kernel size 讓輸出有對準
+        if self.enc_basis in ['DCCRN', 'DCTCN', 'TorchSTFT', 'TENET', 'DCT', 'FiLM_DCT']:
+            padding = (100 - (T - 400) % 100) % 100
+        else:
+            padding = (stride - (T - kernel_size) % stride) % stride
+
+        padding_left = padding // 2
+        padding_right = padding - padding_left
+        input = F.pad(input, (padding_left, padding_right))
+    
+        w = self.encoder(input)
+        if sources is not None: 
+            with torch.no_grad():
+                sources = F.pad(sources, (padding_left, padding_right))
+                s = self.encoder(sources)
+
+        # print(w.shape)
+        if torch.is_complex(w):
+            amplitude, phase = torch.abs(w), torch.angle(w)
+            mask = self.separator(amplitude)
+            amplitude, phase = amplitude.unsqueeze(dim=1), phase.unsqueeze(dim=1)
+            w_hat = amplitude * mask * torch.exp(1j * phase)
+        else:
+            if sources is not None: 
+                x, s = self.spliceout_fn(w, s, 24, 2)
+            else:
+                x = w
+            mask = self.separator(x)
+            # Negative mask loss
+            mask[:,1] = torch.ones(mask[:,0].size()).to(mask.get_device()) - mask[:,0]
+
+            w = w.unsqueeze(dim=1)
+            w_hat = w * mask
+
+        # latent = w
+        latent = w_hat
+        w_hat = w_hat.view(batch_size*n_sources, n_basis, -1)
+
+        x_hat = self.decoder(w_hat)
+        if sources is not None: 
+            with torch.no_grad():
+                s_modify = self.decoder(s)
+        
+        x_hat = x_hat.view(batch_size, n_sources, -1)
+        output = F.pad(x_hat, (-padding_left, -padding_right))
+        if sources is None: 
+            return output, latent
+        s_modify = F.pad(s_modify, (-padding_left, -padding_right))
+        
+        return output, latent, s_modify.unsqueeze(1)
+    
+    def get_config(self):
+        config = {
+            'n_basis': self.n_basis,
+            'kernel_size': self.kernel_size,
+            'stride': self.stride,
+            'enc_basis': self.enc_basis,
+            'dec_basis': self.dec_basis,
+            'enc_nonlinear': self.enc_nonlinear,
+            'window_fn': self.window_fn,
+            'enc_onesided': self.enc_onesided,
+            'enc_return_complex': self.enc_return_complex,
+            'sep_hidden_channels': self.sep_hidden_channels,
+            'sep_chunk_size': self.sep_chunk_size,
+            'sep_hop_size': self.sep_hop_size,
+            'sep_down_chunk_size': self.sep_down_chunk_size,
+            'sep_num_blocks': self.sep_num_blocks,
+            'sep_num_heads': self.sep_num_heads,
+            'sep_norm': self.sep_norm,
+            'sep_dropout': self.sep_dropout,
+            'low_dimension': self.low_dimension,
+            'mask_nonlinear': self.mask_nonlinear,
+            'causal': self.causal,
+            'n_sources': self.n_sources,
+            'eps': self.eps,
+            'conv': self.conv,
+            'handcraft': self.handcraft,
+            'local_att': self.local_att,
+            'intra_dropout': self.intra_dropout
+        }
+    
+        return config
+
+    @classmethod
+    def build_model(cls, model_path):
+        config = torch.load(model_path, map_location=lambda storage, loc: storage)
+
+        n_basis = config.get('n_basis') or config['n_bases']
+        kernel_size, stride = config['kernel_size'], config['stride']
+        enc_basis, dec_basis = config.get('enc_bases') or config['enc_basis'], config.get('dec_bases') or config['dec_basis']
+        print(enc_basis, dec_basis)
+        enc_nonlinear = config['enc_nonlinear']
+        enc_onesided, enc_return_complex = config.get('enc_onesided') or None, config.get('enc_return_complex') or None
+        window_fn = config['window_fn']
+        
+        sep_hidden_channels = config['sep_hidden_channels']
+        sep_chunk_size, sep_hop_size = config['sep_chunk_size'], config['sep_hop_size']
+        sep_down_chunk_size, sep_num_blocks = config['sep_down_chunk_size'], config['sep_num_blocks']
+        
+        sep_norm = config['sep_norm']
+        sep_dropout, sep_num_heads = config['sep_dropout'], config['sep_num_heads']
+        mask_nonlinear = config['mask_nonlinear']
+
+        causal = config['causal']
+        n_sources = config['n_sources']
+        low_dimension = config['low_dimension']
+        
+        eps = config['eps']
+        handcraft = config.get('handcraft', False)
+        intra_dropout = config.get('intra_dropout', False)
+        local_att = config.get('local_att', False)
+        
+        model = cls(
+            n_basis, kernel_size, stride=stride, enc_basis=enc_basis, dec_basis=dec_basis, enc_nonlinear=enc_nonlinear, 
+            enc_onesided=enc_onesided, enc_return_complex=enc_return_complex,
+            window_fn=window_fn,sep_hidden_channels=sep_hidden_channels, 
+            sep_chunk_size=sep_chunk_size, sep_hop_size=sep_hop_size, sep_down_chunk_size=sep_down_chunk_size, sep_num_blocks=sep_num_blocks,
+            sep_num_heads=sep_num_heads, sep_norm=sep_norm, sep_dropout=sep_dropout,
+            mask_nonlinear=mask_nonlinear,
+            causal=causal,
+            n_sources=n_sources, handcraft=handcraft,
+            low_dimension=low_dimension,
+            eps=eps, local_att=local_att,intra_dropout=intra_dropout
+        )
+        
+        return model
+    
+    def _get_num_parameters(self):
+        num_parameters = 0
+        
+        for p in self.parameters():
+            if p.requires_grad:
+                num_parameters += p.numel()
+                
+        return num_parameters
+
+
 class GALRNet(nn.Module):
     def __init__(
         self,
@@ -198,7 +503,6 @@ class GALRNet(nn.Module):
     def load(self):
         pass
 
-
     def forward(self, input):
         output, latent = self.extract_latent(input)
         
@@ -232,6 +536,7 @@ class GALRNet(nn.Module):
             w, dct = self.encoder(input)
         else:
             w = self.encoder(input)
+
         # print(w.shape)
         if torch.is_complex(w):
             amplitude, phase = torch.abs(w), torch.angle(w)

@@ -10,6 +10,7 @@ from models.gtu import GTU1d
 from models.transform import Segment1d, OverlapAdd1d
 from models.galr import GALR, LayerNormAlongChannel
 from models.custom.galr_dcn import GALR as GALR_DCN
+from models.custom.feature_combine import ContextCrossAttention
 from dccrn import DCCRN_Encoder,DCCRN_Decoder, DCTCN_Encoder, \
     DCTCN_Decoder,Naked_Encoder, Naked_Decoder, FiLM_Encoder, \
     Deep_Encoder, Deep_Decoder
@@ -955,9 +956,10 @@ class Separator_HC_CA(nn.Module):
         self.segment1d = Segment1d(chunk_size, hop_size)
         self.conv2d1 = nn.Conv2d(num_features, hidden_channels // 2, 1,1)
         self.conv2d2 = nn.Conv2d(aux_basis, hidden_channels // 2, 1,1)
-        self.iconv2d = nn.Conv2d(hidden_channels //2, num_features, 1,1) 
+        self.iconv2d = nn.Conv2d(hidden_channels // 2 + hidden_channels // 4 , num_features, 1,1)
+        self.iconv2d3 = nn.Conv2d(hidden_channels // 2 , num_features, 1,1) 
 
-        self.ca = ContextCrossAttention(hidden_channels // 2, num_heads, dropout=0.1, norm=True,causal=causal)
+        self.ca = ContextCrossAttention(hidden_channels // 2, num_heads, dropout=0.1, norm=True,causal=causal, use_BPF=True)
 
         norm_name = 'cLN' if causal else 'gLN'
         self.norm2d1 = choose_layer_norm(norm_name, num_features, causal=causal, eps=eps)
@@ -996,7 +998,7 @@ class Separator_HC_CA(nn.Module):
                 conv=conv,local_att=local_att, intra_dropout=intra_dropout
             )
             self.galr_merge = GALR(
-                hidden_channels // 2, hidden_channels, # TODO: 再改看看有沒有差異
+                hidden_channels //2  + hidden_channels // 4, hidden_channels, # TODO: 再改看看有沒有差異
                 chunk_size=chunk_size, down_chunk_size=down_chunk_size,
                 num_blocks=1, num_heads=num_heads,
                 norm=norm, dropout=dropout,
@@ -1027,7 +1029,7 @@ class Separator_HC_CA(nn.Module):
                 conv=conv,local_att=local_att, intra_dropout=intra_dropout
             )
             self.galr_merge = GALR(
-                hidden_channels // 2, hidden_channels, # TODO: 再改看看有沒有差異
+                hidden_channels //2  + hidden_channels // 4, hidden_channels, # TODO: 再改看看有沒有差異
                 chunk_size=chunk_size, down_chunk_size=down_chunk_size,
                 num_blocks=num_blocks//3, num_heads=num_heads,
                 norm=norm, dropout=dropout,
@@ -1041,6 +1043,7 @@ class Separator_HC_CA(nn.Module):
         self.prelu_f2_in = nn.PReLU()
         self.prelu_f1_mid = nn.PReLU()
         self.prelu_f2_mid = nn.PReLU()
+        self.prelu_f3_mid = nn.PReLU()
         self.prelu_f1_out = nn.PReLU()
         self.prelu_f2_out = nn.PReLU()
         self.map = nn.Conv1d(num_features, n_sources*num_features, kernel_size=1, stride=1)
@@ -1106,8 +1109,12 @@ class Separator_HC_CA(nn.Module):
             lst_mid = [x_dct, lst[0]]
             lst_out = []
             for x_l in lst_mid:
-                x_l = self.prelu_f1_mid(x_l) # New
-                x_l = self.iconv2d(x_l)# New 
+                if x_l.size()[1] == 128:
+                    x_l = self.prelu_f3_mid(x_l) # New
+                    x_l = self.iconv2d3(x_l)# New 
+                else:
+                    x_l = self.prelu_f1_mid(x_l) # New
+                    x_l = self.iconv2d(x_l)# New 
                 
                 x_l = self.overlap_add1d(x_l)
                 x_l = F.pad(x_l, (-padding_left, -padding_right))
@@ -1360,171 +1367,7 @@ class Separator_HC(nn.Module):
             
             return output
 
-class CustomFiLM(nn.Module):
-    def __init__(self, num_features, dims=2):
-        super().__init__()
-        if dims == 2:
-            self.affine_h = nn.Conv2d(num_features, num_features, kernel_size=1)
-            self.affine_r = nn.Conv2d(num_features, num_features, kernel_size=1)
-        else:
-            self.affine_h = nn.Conv1d(num_features, num_features, kernel_size=1)
-            self.affine_r = nn.Conv1d(num_features, num_features, kernel_size=1)
 
-    def forward(self, input1, input2):
-        """
-        Args:
-            input (batch_size, num_features, *)
-            gamma (batch_size, num_features)
-            beta (batch_size, num_features)
-        Returns:
-            output (batch_size, num_features, *)
-        """
-        gamma = self.affine_h(input2)
-        beta = self.affine_r(input2)
-        
-        return gamma * input1 + beta
-
-class ContextCrossAttention(nn.Module):
-    def __init__(
-        self,
-        num_features, num_heads,
-        dropout=0.1, norm=False, eps=EPS,
-        causal=True,
-    ):
-        super().__init__()
-        self.norm = norm
-        if self.norm:
-            self.norm2d_in = LayerNormAlongChannel(num_features, eps=eps)
-            self.norm2d_mid = LayerNormAlongChannel(num_features, eps=eps)
-            norm_name = 'cLN' if causal else 'gLM'
-            self.norm2d_out = choose_layer_norm(norm_name, num_features, causal=causal, eps=eps)
-
-        if dropout is not None:
-            self.dropout = True
-            self.dropout1d = nn.Dropout(p=dropout)
-        else:
-            self.dropout = False
-
-        self.cross_multihead_attn1_seg = nn.MultiheadAttention(num_features, num_heads)
-        self.cross_multihead_attn1_time = nn.MultiheadAttention(num_features, num_heads)
-        self.cross_multihead_attn2_seg = nn.MultiheadAttention(num_features, num_heads)
-        self.cross_multihead_attn2_time = nn.MultiheadAttention(num_features, num_heads)
-        self.film = CustomFiLM(num_features)
-    
-    def swap_and_attention(self, att_module, feat_self, feat_aux, order_in_tuple):
-        batch_size, num_features, S_self, K = feat_self.size()
-        batch_size, num_features, S_aux, K = feat_aux.size()
-
-        reverse_tuple = {v:i for i,v in enumerate(order_in_tuple)}
-        reverse_tuple = dict(sorted(reverse_tuple.items(), key=lambda item: item[0]))
-        reverse_tuple = list(reverse_tuple.values())
-
-        x_self = feat_self.permute(order_in_tuple).contiguous()
-        a, b, c, d = x_self.size()
-        x_self = x_self.view(a, -1, d)
-        residual_self = x_self
-
-        x_aux = feat_aux.permute(order_in_tuple).contiguous()
-        e, _, _, f = x_aux.size()
-        x_aux = x_aux.view(e, -1, f)
-
-        x, _ = att_module(x_self, x_aux, x_aux)
-
-        x = x.view(a, b, c, d)
-        x = x.permute(reverse_tuple)
-
-        return x
-
-
-    def forward(self, feature_main, feature_aux):
-        batch_size, num_features, S_1, K = feature_main.size()
-        batch_size, num_features, S_2, K = feature_aux.size()
-
-        x_main = self.norm2d_in(feature_main) if self.norm else feature_main  # -> (batch_size, num_features, S, K)
-        x_aux = self.norm2d_in(feature_aux) if self.norm else feature_aux  # -> (batch_size, num_features, S, K)
-
-        if S_1 != S_2:
-            x = self.swap_and_attention(self.cross_multihead_attn1_seg, x_main, x_aux,(2,0,3,1))
-            if self.dropout:
-                x = self.dropout1d(x)
-            x += x_main
-            x = self.film(x_main, x) # (bs, feat, S, K)
-            
-            x = self.norm2d_mid(x) if self.norm else x  
-
-            x = self.swap_and_attention(self.cross_multihead_attn2_seg, x_main, x,(2,0,3,1))
-            x += x_main
-        else:
-            x = self.swap_and_attention(self.cross_multihead_attn1_seg, x_main, x_aux,(3,0,2,1))
-            if self.dropout:
-                x = self.dropout1d(x)
-            x += x_main
-            x = self.film(x_main, x) # (bs, feat, S, K)
-            
-            x = self.norm2d_mid(x) if self.norm else x  
-            x = self.swap_and_attention(self.cross_multihead_attn2_seg, x_main, x,(3,0,2,1))
-            x += x_main
-
-        # # Segment-Attention
-        # x_main = x_main.permute(2,0,3,1).contiguous() # -> (S, batch_size, K, num_features)
-        # # x_main = x_main.view(S, batch_size*K, num_features) # -> (S, batch_size*K, num_features)
-        # residual_main = x_main # (S, batch_size*K, num_features)
-
-        # x = x_main
-
-        # x_aux = x_aux.permute(2,0,3,1).contiguous() # -> (S, batch_size, K, num_features)
-        # # x_aux = x_aux.view(S, batch_size*K, num_features) # -> (S, batch_size*K, num_features)
-        
-        # # x, _ = self.cross_multihead_attn1_seg(x_main, x_aux, x_aux) # (T_tgt, batch_size, num_features), (batch_size, T_tgt, T_src), where T_tgt = T_src = T
-
-        # # Timestep-Attention
-        # x = x.view(S, batch_size, K, num_features).transpose(0,2).contiguous().view(K, -1, num_features) # (K, batchsize * S, features)
-        # x_aux = x_aux.view(S, batch_size, K, num_features).transpose(0,2).contiguous().view(K, -1, num_features) 
-        # x, _ = self.cross_multihead_attn1_time(x, x_aux, x_aux) # (T_tgt, batch_size, num_features), (batch_size, T_tgt, T_src), where T_tgt = T_src = T
-
-        # x_main = x_main.view(S, batch_size, K, num_features).transpose(0,2).contiguous().view(K, -1, num_features)
-        # x += x_main # Residual (K, batchsize * S, features)
-        
-        # FiLM
-
-        # x = x.view(K, batch_size, S, num_features).permute(1, 3, 2, 0)
-        # x_main = x_main.view(K, batch_size, S, num_features).permute(1, 3, 2, 0)
-        
-        # After FiLM
-        
-        # Segment-Attention
-        # x_main = x_main.permute(2,0,3,1).contiguous() # -> (S, batch_size, K, num_features)
-        # x_main = x_main.view(S, batch_size*K, num_features) # -> (S, batch_size*K, num_features)
-
-        # x = x.permute(2,0,3,1).contiguous() # -> (S, batch_size, K, num_features)
-        # x = x.view(S, batch_size*K, num_features) # -> (S, batch_size*K, num_features)
-        
-        # x, _ = self.cross_multihead_attn2_seg(x_main, x, x) # (T_tgt, batch_size, num_features), (batch_size, T_tgt, T_src), where T_tgt = T_src = T
-
-        # x_main = x_main.view(S, batch_size, K, num_features).transpose(0,2).contiguous().view(K, -1, num_features) # (K, batchsize * S, features)
-
-
-        # Timestep-Attention
-        # x = x.view(S, batch_size, K, num_features).transpose(0,2).contiguous().view(K, -1, num_features) # (K, batchsize * S, features)
-        # x, _ = self.cross_multihead_attn2_time(x_main, x, x) # (T_tgt, batch_size, num_features), (batch_size, T_tgt, T_src), where T_tgt = T_src = T
-
-        # x_main = x_main.view(S, batch_size, K, num_features).transpose(0,2).contiguous().view(K, -1, num_features)
-
-        # x, _ = self.cross_multihead_attn2_seg(x_main, x, x) # (T_tgt, batch_size, num_features), (batch_size, T_tgt, T_src), where T_tgt = T_src = T
-
-        if self.dropout:
-            x = self.dropout1d(x)
-        x = x + x_main # -> (S, batch_size*K, num_features)'
-
-        # x = x..view(K, batch_size, S, num_features)
-
-        # x = x.view(S, batch_size, K, num_features)
-        # x = x.permute(1,3,2,0).contiguous() # -> (batch_size, num_features, S, K)
-
-        if self.norm:
-            x = self.norm2d_out(x) # -> (batch_size, num_features, S, K)
-        
-        return x
 
 def _test_separator():
     batch_size, n_frames = 2, 5

@@ -122,7 +122,6 @@ train_imp.py \
 -Q ${Q} \
 -N ${N} \
 -J ${J} \
---stride 100 \
 --causal ${causal} \
 --sep_norm ${sep_norm} \
 --sep_dropout ${sep_dropout} \

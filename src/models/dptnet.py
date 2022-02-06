@@ -71,23 +71,27 @@ class DPTNet(nn.Module):
         self.n_sources = n_sources
         self.eps = eps
 
+        self.handcraft_basis_lst = ['TENET', 'DCT']
+
         if 'TENET' in [enc_basis, dec_basis]:
             encoder, decoder = Naked_Encoder(feat_type='TENET', causal=causal), Naked_Decoder(feat_type='TENET')
+        elif 'DCT' in [enc_basis, dec_basis]:
+            encoder, decoder = Naked_Encoder(feat_type='dct',causal=causal), Naked_Decoder(feat_type='dct')
         else:        
             # Network configuration
             encoder, decoder = choose_filterbank(n_basis, kernel_size=kernel_size, stride=stride, enc_basis=enc_basis, dec_basis=dec_basis, **kwargs)
         
         self.encoder = encoder
-        if enc_basis in ['TENET']:
+        if enc_basis in self.handcraft_basis_lst:
             self.separator = Separator_HC(
-                        n_basis, bottleneck_channels=sep_bottleneck_channels, hidden_channels=sep_hidden_channels,
-                        chunk_size=sep_chunk_size, hop_size=sep_hop_size, num_blocks=sep_num_blocks,
-                        num_heads=sep_num_heads, norm=sep_norm, nonlinear=sep_nonlinear, dropout=sep_dropout,
-                        mask_nonlinear=mask_nonlinear,
-                        causal=causal,
-                        n_sources=n_sources,
-                        eps=eps
-                    )
+                n_basis, bottleneck_channels=sep_bottleneck_channels, hidden_channels=sep_hidden_channels,
+                chunk_size=sep_chunk_size, hop_size=sep_hop_size, num_blocks=sep_num_blocks,
+                num_heads=sep_num_heads, norm=sep_norm, nonlinear=sep_nonlinear, dropout=sep_dropout,
+                mask_nonlinear=mask_nonlinear,
+                causal=causal,
+                n_sources=n_sources,
+                eps=eps
+            )
         else:
             self.separator = Separator(
                 n_basis, bottleneck_channels=sep_bottleneck_channels, hidden_channels=sep_hidden_channels,
@@ -121,14 +125,17 @@ class DPTNet(nn.Module):
         
         assert C_in == 1, "input.size() is expected (?, 1, ?), but given {}".format(input.size())
 
-        if self.enc_basis in ['TENET']:
+        if self.enc_basis in self.handcraft_basis_lst:
             padding = (100 - (T - 400) % 100) % 100
         else:
             padding = (stride - (T - kernel_size) % stride) % stride
         padding_left = padding // 2
         padding_right = padding - padding_left
 
+        print(input.shape, flush=True)
         input = F.pad(input, (padding_left, padding_right))
+        print(input.shape, flush=True)
+
         w = self.encoder(input)
 
         if torch.is_complex(w):
@@ -146,6 +153,8 @@ class DPTNet(nn.Module):
         x_hat = self.decoder(w_hat)
         x_hat = x_hat.view(batch_size, n_sources, -1)
         output = F.pad(x_hat, (-padding_left, -padding_right))
+        print(output.shape, flush=True)
+
         
         return output, latent
     
