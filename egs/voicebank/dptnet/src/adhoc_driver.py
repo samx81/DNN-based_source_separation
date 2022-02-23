@@ -107,7 +107,7 @@ class AdhocTrainer(TrainerBase):
             
             train_loss += loss.item()
             
-            t.set_postfix_str(f'loss: {loss.item():.3f}, lr: {lr:.10f}')
+            t.set_postfix_str(f'loss: {loss.item():.3f}, lr: {lr:.6f}')
             
             # if (idx + 1)%100 == 0:
         t.write("[Epoch {}/{}] lr: {:.5f}".format(epoch+1, self.epochs, lr))

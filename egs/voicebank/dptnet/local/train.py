@@ -13,7 +13,7 @@ from adhoc_driver import AdhocTrainer, AdhocTrainer_AMP
 from models.custom.dptnet_tenet import DPTNet
 from criterion.sdr import NegSISDR
 from criterion.pit import PIT1d
-from criterion.stft_loss import DEMUCSLoss, MagMSELoss, CombinePFPLoss, CombineSISNRLoss
+from criterion.stft_loss import DEMUCSLoss, CombinePFPLoss, CombineSISNRLoss
 from driver import MyNegSISNR
 
 parser = argparse.ArgumentParser(description="Training of Conv-TasNet")
@@ -159,7 +159,6 @@ def main(args):
         trainer = AdhocTrainer_AMP(model, loader, criterion, optimizer, args)
     else:
         trainer = AdhocTrainer(model, loader, criterion, optimizer, args)
-    print(trainer)
     trainer.run()
     
 if __name__ == '__main__':
