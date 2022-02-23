@@ -573,6 +573,8 @@ class Separator(nn.Module):
             self.mask_nonlinear = nn.ReLU()
         elif mask_nonlinear == 'sigmoid':
             self.mask_nonlinear = nn.Sigmoid()
+        elif mask_nonlinear == 'tanh':
+            self.mask_nonlinear = nn.Tanh()
         elif mask_nonlinear == 'softmax':
             self.mask_nonlinear = nn.Softmax(dim=1)
         else:

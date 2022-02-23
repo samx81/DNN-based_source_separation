@@ -7,6 +7,7 @@ continue_from=""
 tag=""
 new_dset=
 amp=
+worker=16
 
 n_sources=2
 sr_k=16 # sr_k=8 means sampling rate is 8kHz. Choose from 8kHz or 16kHz.
@@ -113,6 +114,7 @@ train.py \
 ${amp:+"--amp"} \
 ${new_dset:+"--new_dset"} \
 ${mask:+"--mask"} ${mask:+"$mask"} \
+--worker ${worker} \
 --train_wav_root ${train_wav_root} \
 --valid_wav_root ${valid_wav_root} \
 --train_list_path ${train_list_path} \
