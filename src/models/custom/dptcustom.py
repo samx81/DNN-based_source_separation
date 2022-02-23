@@ -316,7 +316,7 @@ class ImprovedTransformer(nn.Module):
     def __init__(self, num_features, hidden_channels, num_heads=4, norm=True, nonlinear='relu', dropout=0, causal=False, eps=EPS):
         super().__init__()
 
-        self.conformerconv = ConformerConvModule(num_features, 15)
+        # self.conformerconv = ConformerConvModule(num_features, 15)
         self.multihead_attn_block = MultiheadAttentionBlock(num_features, num_heads, norm=norm, dropout=dropout, causal=causal, eps=eps)
         self.subnet = FeedForwardBlock(num_features, hidden_channels, norm=norm, nonlinear=nonlinear, dropout=dropout, causal=causal, eps=eps)
 
@@ -327,10 +327,10 @@ class ImprovedTransformer(nn.Module):
         Returns:
             output (T, batch_size, num_features)
         """
-        residual = input
-        x = self.conformerconv(input)
-        x = x + residual
-        # x = input
+        # residual = input
+        # x = self.conformerconv(input)
+        # x = x + residual
+        x = input
         x = self.multihead_attn_block(x)
         output = self.subnet(x)
         
