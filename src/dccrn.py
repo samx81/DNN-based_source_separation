@@ -6,7 +6,7 @@ from tenet_stft import STFT, ISTFT
 from complexnn import ComplexConv2d, ComplexConvTranspose2d, ComplexBatchNorm
 from models.tcn import TemporalConvNet
 from models.film import FiLM2d
-from utils.utils_tasnet import choose_layer_norm
+from utils.tasnet import choose_layer_norm
 import dct, dense_dilated
 
 EPS = 1e-12

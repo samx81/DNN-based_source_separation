@@ -8,7 +8,7 @@ import torch.nn as nn
 from utils.utils import set_seed
 from dataset import WaveTrainDataset, WaveEvalDataset, TrainDataLoader, EvalDataLoader
 from new_dataset import WaveTrainDataset as NewTrainDataset, masktwice_collatefn
-from adhoc_driver import AdhocTrainer
+from adhoc_driver import AdhocTrainer, AdhocTrainer_AMP
 # from models.dptnet import DPTNet
 from models.custom.dptnet_tenet import DPTNet
 from criterion.sdr import NegSISDR
@@ -64,6 +64,7 @@ parser.add_argument('--seed', type=int, default=42, help='Random seed')
 parser.add_argument('--worker', type=int, default=16, help='Random seed')
 parser.add_argument('--new_dset', default=False, action='store_true')
 parser.add_argument("--mask", help="Mask", nargs='?', type=str, const='zero')
+parser.add_argument('--amp', default=False, action='store_true')
 
 def main(args):
     set_seed(args.seed)
@@ -154,8 +155,11 @@ def main(args):
         raise ValueError("Not support criterion {}".format(args.criterion))
     
     #pit_criterion = PIT1d(criterion, n_sources=args.n_sources)
-    
-    trainer = AdhocTrainer(model, loader, criterion, optimizer, args)
+    if args.amp:
+        trainer = AdhocTrainer_AMP(model, loader, criterion, optimizer, args)
+    else:
+        trainer = AdhocTrainer(model, loader, criterion, optimizer, args)
+    print(trainer)
     trainer.run()
     
 if __name__ == '__main__':

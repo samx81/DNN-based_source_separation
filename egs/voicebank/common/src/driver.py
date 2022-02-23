@@ -154,7 +154,7 @@ class TrainerBase:
     def run(self):
         for epoch in range(self.start_epoch, self.epochs):
             start = time.time()
-            train_loss, valid_loss = self.run_one_epoch(epoch)
+            train_loss, valid_loss, pesq = self.run_one_epoch(epoch)
             end = time.time()
             
             if type(valid_loss) is tuple:
@@ -162,8 +162,8 @@ class TrainerBase:
                 print("[Epoch {}/{}] loss (train): {:.5f}, loss (valid): {:.5f}, (noise) {:.5f}, {:.3f} [sec], best_loss:{:.5f}".format(
                     epoch+1, self.epochs, train_loss, valid_loss, valid_loss_noise, end - start, self.best_loss), flush=True)
             else:
-                print("[Epoch {}/{}] loss (train): {:.5f}, loss (valid): {:.5f}, {:.3f} [sec], best_loss:{:.5f}, imp{}".format(
-                    epoch+1, self.epochs, train_loss, valid_loss, end - start, self.best_loss, self.no_improvement), flush=True)
+                print("[Epoch {}/{}] loss (train): {:.5f}, loss (valid): {:.5f}, {:.3f} [sec], best_loss:{:.5f}, imp{}, pesq:".format(
+                    epoch+1, self.epochs, train_loss, valid_loss, end - start, self.best_loss, self.no_improvement, pesq), flush=True)
             
             
             self.train_loss[epoch] = train_loss
@@ -196,15 +196,17 @@ class TrainerBase:
             
             save_path = os.path.join(self.loss_dir, "loss.png")
             draw_loss_curve(train_loss=self.train_loss[:epoch+1], valid_loss=self.valid_loss[:epoch+1], save_path=save_path)
+        print('Reached the end of epochs.')
     
     def run_one_epoch(self, epoch):
         """
         Training
         """
-        train_loss = self.run_one_epoch_train(epoch)
-        valid_loss = self.run_one_epoch_eval(epoch)
 
-        return train_loss, valid_loss
+        train_loss = self.run_one_epoch_train(epoch)
+        valid_loss, pesq = self.run_one_epoch_eval(epoch)
+
+        return train_loss, valid_loss, pesq
     
     def run_one_epoch_train(self, epoch):
         """
@@ -269,6 +271,7 @@ class TrainerBase:
         self.model.eval()
         
         valid_loss = 0
+        pesq = 0
 
         valid_loss_denoise = []
         n_valid = len(self.valid_loader.dataset)
@@ -298,6 +301,7 @@ class TrainerBase:
 
                 # loss = loss.sum(dim=0)
                 valid_loss += loss.item()
+                pesq += pypesq(self.sr, sources[:,0].squeeze().cpu().numpy(), output[:,0].cpu().squeeze().numpy(), 'wb' )
                 
                 if idx < 5:
                     mixture = mixture[0].squeeze(dim=0).cpu()
@@ -319,13 +323,14 @@ class TrainerBase:
                         torchaudio.save(save_path, signal, sample_rate=self.sr, bits_per_sample=BITS_PER_SAMPLE_WSJ0)
         
         valid_loss /= n_valid
+        pesq /= n_valid
         
         if len(valid_loss_denoise) != 0:
 
             valid_loss_denoise = [(v / n_valid) for v in valid_loss_denoise]
             return (valid_loss, valid_loss_denoise)
 
-        return valid_loss
+        return valid_loss, pesq
     
     def save_model(self, epoch, model_path='./tmp.pth'):
         if isinstance(self.model, nn.DataParallel):

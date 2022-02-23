@@ -6,6 +6,7 @@ exp_dir="./exp"
 continue_from=""
 tag=""
 new_dset=
+amp=
 
 n_sources=2
 sr_k=16 # sr_k=8 means sampling rate is 8kHz. Choose from 8kHz or 16kHz.
@@ -109,6 +110,7 @@ echo "$0 ${args}" > "${log_dir}/train_${time_stamp}.log"
 export CUDA_VISIBLE_DEVICES="${gpu_id}"
 
 train.py \
+${amp:+"--amp"} \
 ${new_dset:+"--new_dset"} \
 ${mask:+"--mask"} ${mask:+"$mask"} \
 --train_wav_root ${train_wav_root} \
@@ -151,4 +153,4 @@ ${mask:+"--mask"} ${mask:+"$mask"} \
 --continue_from "${continue_from}" \
 --use_cuda ${use_cuda} \
 --overwrite ${overwrite} \
---seed ${seed} | tee "${log_dir}/train_${time_stamp}.log"
+--seed ${seed} | tee -a "${log_dir}/train_${time_stamp}.log"

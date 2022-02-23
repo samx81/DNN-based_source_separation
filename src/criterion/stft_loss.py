@@ -16,8 +16,9 @@ import torch.nn as nn
 from models.complex import STFT
 from criterion.pfp_loss import PerceptualLoss, PerceptualLoss_Hubert
 from criterion.sdr import NegSISDR
+from dct import sdct_torch
 
-def stft(x, fft_size, hop_size, win_length, window):
+def stft(x, fft_size, hop_size, win_length, window, full=False):
     """Perform STFT and convert to magnitude spectrogram.
     Args:
         x (Tensor): Input signal tensor (B, T).
@@ -32,6 +33,8 @@ def stft(x, fft_size, hop_size, win_length, window):
     real = x_stft[..., 0]
     imag = x_stft[..., 1]
 
+    if full:
+        return torch.sqrt(torch.clamp(real ** 2 + imag ** 2, min=1e-7)).transpose(2, 1) ,x_stft
     # NOTE(kan-bayashi): clamp is needed to avoid nan or inf
     return torch.sqrt(torch.clamp(real ** 2 + imag ** 2, min=1e-7)).transpose(2, 1)
 
@@ -71,6 +74,33 @@ class LogSTFTMagnitudeLoss(torch.nn.Module):
         """
         return F.l1_loss(torch.log(y_mag), torch.log(x_mag))
 
+class STFTMSELoss(torch.nn.Module):
+    """STFT loss module."""
+
+    def __init__(self, fft_size=1024, shift_size=120, win_length=600, window="hann_window"):
+        """Initialize STFT loss module."""
+        super(STFTMSELoss, self).__init__()
+        self.fft_size = fft_size
+        self.shift_size = shift_size
+        self.win_length = win_length
+        self.register_buffer("window", getattr(torch, window)(win_length))
+        self.window = self.window.cuda()
+        self.log_stft_magnitude_loss = LogSTFTMagnitudeLoss()
+
+    def forward(self, x, y):
+        """Calculate forward propagation.
+        Args:
+            x (Tensor): Predicted signal (B, T).
+            y (Tensor): Groundtruth signal (B, T).
+        Returns:
+            Tensor: Spectral convergence loss value.
+            Tensor: Log STFT magnitude loss value.
+        """
+        x_mag = stft(x, self.fft_size, self.shift_size, self.win_length, self.window)
+        y_mag = stft(y, self.fft_size, self.shift_size, self.win_length, self.window)
+        mag_loss = F.mse_loss(torch.log(y_mag), torch.log(x_mag))
+
+        return mag_loss
 
 class STFTLoss(torch.nn.Module):
     """STFT loss module."""
@@ -97,6 +127,36 @@ class STFTLoss(torch.nn.Module):
         """
         x_mag = stft(x, self.fft_size, self.shift_size, self.win_length, self.window)
         y_mag = stft(y, self.fft_size, self.shift_size, self.win_length, self.window)
+        sc_loss = self.spectral_convergenge_loss(x_mag, y_mag)
+        mag_loss = self.log_stft_magnitude_loss(x_mag, y_mag)
+
+        return sc_loss, mag_loss
+
+class STDCTLoss(torch.nn.Module):
+    """STFT loss module."""
+
+    def __init__(self, fft_size=1024, shift_size=120, win_length=600, window="hann_window"):
+        """Initialize STFT loss module."""
+        super(STDCTLoss, self).__init__()
+        self.fft_size = fft_size
+        self.shift_size = shift_size
+        self.win_length = win_length
+        self.window = torch.hann_window
+        # self.window = self.window.cuda()
+        self.spectral_convergenge_loss = SpectralConvergengeLoss()
+        self.log_stft_magnitude_loss = LogSTFTMagnitudeLoss()
+
+    def forward(self, x, y):
+        """Calculate forward propagation.
+        Args:
+            x (Tensor): Predicted signal (B, T).
+            y (Tensor): Groundtruth signal (B, T).
+        Returns:
+            Tensor: Spectral convergence loss value.
+            Tensor: Log STFT magnitude loss value.
+        """
+        x_mag = sdct_torch(x, self.fft_size, self.win_length, self.shift_size, window=self.window)
+        y_mag = sdct_torch(y, self.fft_size, self.win_length, self.shift_size, window=self.window)
         sc_loss = self.spectral_convergenge_loss(x_mag, y_mag)
         mag_loss = self.log_stft_magnitude_loss(x_mag, y_mag)
 
@@ -180,12 +240,45 @@ class DEMUCSLoss(torch.nn.Module):
         loss += sc_loss + mag_loss
         return loss
 
-class MagMSELoss(torch.nn.Module):
+class DCTDEMUCSLoss(torch.nn.Module):
+    """DEMUCS loss module."""
+
+    def __init__(self, loss, fft_size=1024, shift_size=120, win_length=600, window="hann_window"):
+        """Initialize STFT loss module."""
+        super(DCTDEMUCSLoss, self).__init__()
+        if loss == 'l1':
+            self.loss = nn.L1Loss()
+        elif loss == 'l2':
+            self.loss = nn.MSELoss()
+        elif loss == 'huber':
+            self.loss = nn.SmoothL1Loss()
+        else:
+            raise ValueError(f"Invalid loss {loss}")
+
+        self.stdct_loss = STDCTLoss(fft_size, shift_size, win_length, window)
+
+
+    def forward(self, x, y):
+        """Calculate forward propagation.
+        Args:
+            x (Tensor): Predicted signal (B, T). Est
+            y (Tensor): Groundtruth signal (B, T). Clean
+        Returns:
+            Tensor: Spectral convergence loss value.
+            Tensor: Log STFT magnitude loss value.
+        """
+        loss = self.loss(y,x) # torch.loss -> clean, estimate
+        sc_loss, mag_loss = self.stdct_loss(x, y)
+
+        loss += sc_loss + mag_loss
+        return loss
+
+class MagMAELoss(torch.nn.Module):
     """DEMUCS loss module."""
 
     def __init__(self, fft_size=1024, shift_size=120, win_length=600, window="hann_window"):
         """Initialize STFT loss module."""
-        super(MagMSELoss, self).__init__()
+        super(MagMAELoss, self).__init__()
 
         self.stft_loss = STFTLoss(fft_size, shift_size, win_length, window)
 
@@ -304,15 +397,14 @@ class CombineSISNRLoss(torch.nn.Module):
 
         return loss
 
-class T_TF_Loss(torch.nn.Module):
+class Simple_Loss(torch.nn.Module):
     """DEMUCS loss module."""
 
-    def __init__(self, loss_t, loss_tf, weight=0.2):
+    def __init__(self, loss_fn, use_latent=False):
         """Initialize STFT loss module."""
-        super(T_TF_Loss, self).__init__()
-        self.loss_t = loss_t
-        self.loss_tf = loss_tf
-        self.weight = weight
+        super(Simple_Loss, self).__init__()
+        self.loss_fn = loss_fn
+        self.use_latent = use_latent
         
         # self.snr_loss = NegSISDR()
 
@@ -325,9 +417,95 @@ class T_TF_Loss(torch.nn.Module):
             Tensor: Spectral convergence loss value.
             Tensor: Log STFT magnitude loss value.
         """
-        loss = (1 - self.weight) * self.loss_t(x, y)
-        tf_loss = self.loss_tf(latent_x , latent_y)
-        loss += self.weight * tf_loss
+        if self.use_latent:
+            loss = self.loss_fn(latent_x, latent_y)
+        else:
+            loss = self.loss_fn(x, y)
 
+        return loss
+
+class STFTCombineDomain_Loss(torch.nn.Module):
+    """DEMUCS loss module."""
+        
+    def __init__(self, loss_fn, complex_weight=0.3, fft_size=1024, shift_size=120, win_length=600, window="hann_window", consistency=False):
+        """Initialize STFT loss module."""
+        super(STFTMagDomain_Loss, self).__init__()
+        self.fft_size = fft_size
+        self.shift_size = shift_size
+        self.win_length = win_length
+        self.register_buffer("window", getattr(torch, window)(win_length))
+        self.window = self.window.cuda()
+        self.loss_fn = loss_fn
+        self.complex_weight = complex_weight
+
+    def forward(self, x, y, latent_x, latent_y):
+        """Calculate forward propagation.
+        Args:
+            x (Tensor): Predicted signal (B, T).
+            y (Tensor): Groundtruth signal (B, T).
+        Returns:
+            Tensor: Spectral convergence loss value.
+            Tensor: Log STFT magnitude loss value.
+        """
+        x_mag, x_stft = stft(x, self.fft_size, self.shift_size, self.win_length, self.window, full=True)
+        y_mag, y_stft = stft(y, self.fft_size, self.shift_size, self.win_length, self.window, full=True)
+        loss = (1 - self.complex_weight) * self.loss_fn(x_mag, y_mag)
+        loss += self.complex_weight * self.loss_fn(x_stft, y_stft)
+
+        return loss
+
+class STFTMagDomain_Loss(torch.nn.Module):
+    """DEMUCS loss module."""
+        
+    def __init__(self, loss_fn, fft_size=1024, shift_size=120, win_length=600, window="hann_window", consistency=False):
+        """Initialize STFT loss module."""
+        super(STFTMagDomain_Loss, self).__init__()
+        self.fft_size = fft_size
+        self.shift_size = shift_size
+        self.win_length = win_length
+        self.register_buffer("window", getattr(torch, window)(win_length))
+        self.window = self.window.cuda()
+        self.loss_fn = loss_fn
+
+    def forward(self, x, y, latent_x, latent_y):
+        """Calculate forward propagation.
+        Args:
+            x (Tensor): Predicted signal (B, T).
+            y (Tensor): Groundtruth signal (B, T).
+        Returns:
+            Tensor: Spectral convergence loss value.
+            Tensor: Log STFT magnitude loss value.
+        """
+        x_mag = stft(x, self.fft_size, self.shift_size, self.win_length, self.window)
+        y_mag = stft(y, self.fft_size, self.shift_size, self.win_length, self.window)
+        loss = self.loss_fn(x_mag, y_mag)
+
+        return loss
+
+class STDCTDomain_Loss(torch.nn.Module):
+    """STFT loss module."""
+
+    def __init__(self, loss_fn, fft_size=1024, shift_size=120, win_length=600, window="hann_window"):
+        """Initialize STFT loss module."""
+        super(STDCTDomain_Loss, self).__init__()
+        self.fft_size = fft_size
+        self.shift_size = shift_size
+        self.win_length = win_length
+        self.window = torch.hann_window
+        # self.window = self.window.cuda()
+        self.loss_fn = loss_fn
+
+    def forward(self, x, y, latent_x, latent_y):
+        """Calculate forward propagation.
+        Args:
+            x (Tensor): Predicted signal (B, T).
+            y (Tensor): Groundtruth signal (B, T).
+        Returns:
+            Tensor: Spectral convergence loss value.
+            Tensor: Log STFT magnitude loss value.
+        """
+        x_mag = sdct_torch(x, self.fft_size, self.win_length, self.shift_size, window=self.window)
+        y_mag = sdct_torch(y, self.fft_size, self.win_length, self.shift_size, window=self.window)
+        loss = self.loss_fn(x_mag, y_mag)
 
         return loss

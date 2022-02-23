@@ -9,7 +9,7 @@ from utils.utils import set_seed
 from dataset import WaveTestDataset, TestDataLoader
 from adhoc_driver import Tester
 # from models.dptnet import DPTNet
-from models.custom.dptnet_tenet import DPTNet
+from models.custom.dptnet_tenet import DPTNet,DPTNet_Interact
 from criterion.sdr import NegSISDR
 from criterion.pit import PIT1d
 
@@ -27,6 +27,7 @@ parser.add_argument('--overwrite', type=int, default=0, help='0: NOT overwrite, 
 parser.add_argument('--seed', type=int, default=42, help='Random seed')
 parser.add_argument('--no_metric', default=True, action='store_false')
 parser.add_argument('--watermark', default=True, action='store_false')
+parser.add_argument('--interact', default=False, action='store_true')
 def main(args):
     set_seed(args.seed)
     
@@ -34,8 +35,10 @@ def main(args):
     print("Test dataset includes {} samples.".format(len(test_dataset)))
     
     loader = TestDataLoader(test_dataset, batch_size=1, shuffle=False)
-    
-    model = DPTNet.build_model(args.model_path)
+    if args.interact:
+        model = DPTNet_Interact.build_model(args.model_path)
+    else:
+        model = DPTNet.build_model(args.model_path)
     print(model)
     print("# Parameters: {}".format(model.num_parameters))
     

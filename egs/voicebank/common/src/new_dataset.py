@@ -63,7 +63,6 @@ def masktwice_collatefn(data):
 
     mixture = torch.cat(mix_lst, dim=0)
     source  = torch.cat(src_lst, dim=0)
-    # print(mixture.shape, flush=True)
     return mixture, source
 
 class WSJ0Dataset(torch.utils.data.Dataset):
@@ -298,22 +297,23 @@ class WaveDataset(WSJ0Dataset):
             elif self.mask=='zerotwice':
                 n1 = mask_samples(
                     noisy, mask_length=self.mask_len,
-                    max_mask=self.max_mask, masking_type=self.mask
+                    max_mask=self.max_mask, masking_type='zero'
                 )
                 n2 = mask_samples(
                     noisy, mask_length=self.mask_len,
-                    max_mask=self.max_mask, masking_type=self.mask
+                    max_mask=self.max_mask, masking_type='zero'
                 )
             elif self.mask=='TENET':
-                n1 = mask_samples(
-                    noisy, mask_length=self.mask_len,
-                    max_mask=self.max_mask, masking_type=self.mask
-                )
-                n2, c2 = np.flip(noisy, axis=0), np.flip(clean, axis=0)
-                n2 = mask_samples(
-                    n2, mask_length=self.mask_len,
-                    max_mask=self.max_mask, masking_type=self.mask
-                )
+                # n1 = mask_samples(
+                #     noisy, mask_length=self.mask_len,
+                #     max_mask=self.max_mask, masking_type='zero'
+                # )
+                n1 = noisy
+                n2, c2 = np.flip(noisy, axis=0).copy(), np.flip(clean, axis=0).copy()
+                # n2 = mask_samples(
+                #     n2, mask_length=self.mask_len,
+                #     max_mask=self.max_mask, masking_type='zero'
+                # )
                 
             elif self.mask == 'both':
                 noisy, clean = spliceout(noisy, clean, self.spliceout_num, self.spliceout_len)
@@ -329,9 +329,11 @@ class WaveDataset(WSJ0Dataset):
                 if self.mask == 'zerotwice':
                     shift_offset = np.random.randint(0, self.shift_len, size=1)
                     n1, n2, clean = np.roll(n1, shift_offset), np.roll(n2, shift_offset), np.roll(clean, shift_offset)
-                if self.mask == 'TENET':
-                    shift_offset = np.random.randint(0, self.shift_len, size=1)
+                elif self.mask == 'TENET':
+                    shift_offset, offset2 = np.random.randint(0, self.shift_len, size=2)
+                    # n1, n2, clean, c2 = np.roll(n1, shift_offset), np.roll(n2, offset2), np.roll(clean, shift_offset), np.roll(c2, offset2)
                     n1, n2, clean, c2 = np.roll(n1, shift_offset), np.roll(n2, shift_offset), np.roll(clean, shift_offset), np.roll(c2, shift_offset)
+
                 else:
                     shift_offset = np.random.randint(0, self.shift_len, size=1)
                     noisy, clean = np.roll(noisy, shift_offset), np.roll(clean, shift_offset)
@@ -440,65 +442,27 @@ class WaveTrainDataset(WaveDataset):
         return mixture, sources
 
 class WaveEvalDataset(WaveDataset):
-    def __init__(self, wav_root, list_path, max_samples=None, n_sources=2, chunk=False):
+    def __init__(self, wav_root, list_path, max_samples=None, n_sources=2, chunk=False, flip=False):
         super().__init__(wav_root, list_path, samples=max_samples, least_sample=0, n_sources=n_sources, chunk=chunk)
 
-        # wav_root = os.path.abspath(wav_root)
-        # list_path = os.path.abspath(list_path)
-
-        # self.json_data = []
+        self.flip = flip
         
-        # with open(list_path) as f:
-        #     for line in f:
-        #         ID = line.strip()
-        #         wav_path = os.path.join(wav_root, 'mix', '{}.wav'.format(ID))
-
-        #         wave, _ = torchaudio.load(wav_path)
-                
-        #         _, T_total = wave.size()
-
-    # TODO: 這邊的 max_sample 要注意        
-        #         if max_samples is None:
-        #             samples = T_total
-        #         else:
-        #             if T_total < max_samples:
-        #                 samples = T_total
-        #             else:
-        #                 samples = max_samples
-                
-        #         data = {
-        #             'sources': {},
-        #             'mixture': {}
-        #         }
-                
-        #         for source_idx in range(n_sources):
-        #             source_data = {
-        #                 'path': os.path.join('s{}'.format(source_idx + 1), '{}.wav'.format(ID)),
-        #                 'start': 0,
-        #                 'end': samples
-        #             }
-        #             data['sources']['s{}'.format(source_idx + 1)] = source_data
-                
-        #         mixture_data = {
-        #             'path': os.path.join('mix', '{}.wav'.format(ID)),
-        #             'start': 0,
-        #             'end': samples
-        #         }
-        #         data['mixture'] = mixture_data
-        #         data['ID'] = ID
-            
-        #         self.json_data.append(data)
-    
     def __getitem__(self, idx):
         mixture, sources, _ = super().__getitem__(idx)
         segment_ID = self.json_data[idx]['ID']
+
+        if self.flip:
+            mixture = torch.stack([mixture, torch.flip(mixture,dims=(-1,))], dim=0)
+            sources = torch.stack([sources, torch.flip(sources,dims=(-1,))], dim=0)
+            segment_ID = [segment_ID,segment_ID]
+        
     
         return mixture, sources, segment_ID
 
 class WaveTestDataset(WaveEvalDataset):
-    def __init__(self, wav_root, list_path, max_samples=None, n_sources=2):
-        super().__init__(wav_root, list_path, max_samples=max_samples, n_sources=n_sources,chunk=False)
-        
+    def __init__(self, wav_root, list_path, max_samples=None, n_sources=2, flip=False):
+        super().__init__(wav_root, list_path, max_samples=max_samples, n_sources=n_sources,chunk=False, flip=flip)
+
     def __getitem__(self, idx):
         """
         Returns:
@@ -507,7 +471,7 @@ class WaveTestDataset(WaveEvalDataset):
             segment_ID <str>
         """
         mixture, sources, segment_ID = super().__getitem__(idx)
-        s
+        
         return mixture, sources, segment_ID
 
 class SpectrogramDataset(WaveDataset):
@@ -651,20 +615,23 @@ if __name__ == '__main__':
     n_sources = 2
     data_type = 'tt'
     min_max = 'max'
-    wav_root = "../../../../../db/wsj0-mix/{}speakers/wav8k/{}/{}".format(n_sources, min_max, data_type)
+    # wav_root = "../../../../../db/wsj0-mix/{}speakers/wav8k/{}/{}".format(n_sources, min_max, data_type)
     list_path = "../../../../dataset/wsj0-mix/{}speakers/mix_{}_spk_{}_{}_mix".format(n_sources, n_sources, min_max, data_type)
+    train_wav_root="../../dptnet/data/voicebank/tr"
+    valid_wav_root="../../dptnet/data/voicebank/cv"
     
-    dataset = WaveTrainDataset(wav_root, list_path, n_sources=n_sources)
-    loader = TrainDataLoader(dataset, batch_size=4, shuffle=True)
+    dataset = WaveTrainDataset(train_wav_root, list_path, samples=64000, overlap=32000, \
+            n_sources=2, use_h5py=True, mask= 'TENET', least_sample=28000, speed_perturb=True, shift=True)
+    loader = TrainDataLoader(dataset, batch_size=4, shuffle=True, collate_fn=masktwice_collatefn)
     
     for mixture, sources in loader:
         print(mixture.size(), sources.size())
         break
     
-    dataset = WaveTestDataset(wav_root, list_path, n_sources=n_sources)
-    loader = EvalDataLoader(dataset, batch_size=1, shuffle=False)
+    # dataset = WaveTestDataset(wav_root, list_path, n_sources=n_sources)
+    # loader = EvalDataLoader(dataset, batch_size=1, shuffle=False)
     
-    for mixture, sources, segment_ID in loader:
-        print(mixture.size(), sources.size())
-        print(segment_ID)
-        break
+    # for mixture, sources, segment_ID in loader:
+    #     print(mixture.size(), sources.size())
+    #     print(segment_ID)
+    #     break

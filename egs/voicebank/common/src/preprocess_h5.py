@@ -302,4 +302,4 @@ def package_into_h5(wav_root='data/voicebank/tr', sr=16000, noise=False):
 #         return len(self.json_data)
 
 if __name__ == '__main__':
-    package_into_h5(wav_root='data/dns/tr', noise=False)
+    package_into_h5(wav_root='data/4sec_aidns/tr', noise=False)
