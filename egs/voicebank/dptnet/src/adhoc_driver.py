@@ -499,10 +499,9 @@ class TENET_Trainer(TrainerBase):
         
         torch.save(config, model_path)
 
-class TENET_AMP_Trainer(TENET_Trainer):
+class TENET_Noise_Trainer(TENET_Trainer):
     def __init__(self, model, loader, pit_criterion, optimizer, args):
         super().__init__( model, loader, pit_criterion, optimizer, args)
-        self.scaler = torch.cuda.amp.GradScaler()
     
     def run_one_epoch_train(self, epoch):
         """
@@ -521,31 +520,23 @@ class TENET_AMP_Trainer(TENET_Trainer):
                 mixture = mixture.cuda()
                 sources = sources.cuda()
             
-            # estimated_sources = self.model(mixture)
-            # loss, _ = self.pit_criterion(estimated_sources, sources)
-            # 可以在這裡直接操作 Model 之間的互動?
-            # forward_mix, backward_mix = mixture.chunk(2)
             forward_src, backward_src = sources.chunk(2)
-            with torch.cuda.amp.autocast():
-                estimated_sources, latent = self.model(mixture)
-            # fw_estimated_sources, latent = self.model(forward_mix)
-            # bw_estimated_sources, latent = self.model(backward_mix)
+           
+            estimated_sources, latent = self.model(mixture)
+
             fw_estimated_sources, bw_estimated_sources = estimated_sources.chunk(2)
             loss = self.criterion(fw_estimated_sources[:,0], forward_src[:,0]) * 0.7
             loss += self.criterion(bw_estimated_sources[:,0], backward_src[:,0]) * 0.3
 
             
             self.optimizer.zero_grad()
-            # loss.backward()
-            self.scaler.scale(loss).backward()
+            loss.backward()
             
             if self.max_norm:
                 nn.utils.clip_grad_norm_(self.model.parameters(), self.max_norm)
             
             self.update_lr(epoch)
-            # self.optimizer.step()
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
+            self.optimizer.step()
             
             train_loss += loss.item()
             

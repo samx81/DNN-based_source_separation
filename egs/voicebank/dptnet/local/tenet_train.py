@@ -8,12 +8,13 @@ import torch.nn as nn
 from utils.utils import set_seed
 from dataset import WaveTrainDataset, WaveEvalDataset, TrainDataLoader, EvalDataLoader
 from new_dataset import WaveTrainDataset as NewTrainDataset, masktwice_collatefn
-from adhoc_driver import AdhocTrainer, TENET_Trainer, TENET_AMP_Trainer
+from adhoc_driver import AdhocTrainer, TENET_Trainer#, TENET_AMP_Trainer
 # from models.dptnet import DPTNet
 from models.custom.dptnet_tenet import DPTNet,DPTNet_Interact
 from criterion.sdr import NegSISDR
 from criterion.pit import PIT1d
-from criterion.stft_loss import DEMUCSLoss, MagMAELoss, CombinePFPLoss, CombineSISNRLoss, STFTMSELoss
+from criterion.stft_loss import DEMUCSLoss, MagMAELoss, \
+    CombinePFPLoss, CombineSISNRLoss, STFTMSELoss, STDCTDomain_Loss, STFTMagDomain_Loss
 from driver import MyNegSISNR
 
 parser = argparse.ArgumentParser(description="Training of Conv-TasNet")
@@ -44,7 +45,8 @@ parser.add_argument('--sep_nonlinear', type=str, default='relu', help='Non-linea
 parser.add_argument('--sep_dropout', type=float, default=0, help='Dropout')
 parser.add_argument('--mask_nonlinear', type=str, default='sigmoid', help='Non-linear function of mask estiamtion')
 parser.add_argument('--n_sources', type=int, default=None, help='# speakers')
-parser.add_argument('--criterion', type=str, default='sisdr', choices=['demucs_mse','sisdr','pfp_sisnr','sisnr'], help='Criterion')
+parser.add_argument('--criterion', type=str, default='sisdr', choices=['dct_mae','demucs_mse',
+                        'dct_mag_mae','dct_mag_mae_pfp','sisdr','pfp_sisnr','sisnr'], help='Criterion')
 parser.add_argument('--optimizer', type=str, default='adam', choices=['sgd', 'adam', 'rmsprop'], help='Optimizer, [sgd, adam, rmsprop]')
 parser.add_argument('--k1', type=float, default=2e-1, help='Learning rate during warm up. Default: 2e-1')
 parser.add_argument('--k2', type=float, default=4e-4, help='Learning rate after warm up. Default: 4e-4')
@@ -81,8 +83,8 @@ def main(args):
 
     # train_dataset = WaveTrainDataset(args.train_wav_root, args.train_list_path, samples=samples, overlap=overlap, n_sources=args.n_sources, use_h5py=True)
     if args.new_dset:
-        speed_perturb=False
-        shift=False
+        speed_perturb=True
+        shift=True
         print(f'Mask usage: {args.mask}, speed_perturb={speed_perturb}, shift={shift}')
         train_dataset = NewTrainDataset(args.train_wav_root, args.train_list_path, samples=samples, overlap=overlap, \
             n_sources=args.n_sources, noise_loss=args.noise_loss, use_h5py=True, mask= args.mask, least_sample=28000, speed_perturb=speed_perturb, shift=shift)
@@ -167,16 +169,26 @@ def main(args):
         criterion = CombinePFPLoss(criterion, 2000)
     elif args.criterion == 'demucs_mse':
         criterion = DEMUCSLoss('l2')
-    elif args.criterion == 'dct_mse':
-        pass
+    elif args.criterion == 'dct_mae':
+        criterion = torch.nn.L1Loss()
+        criterion = STDCTDomain_Loss(criterion)
+    elif args.criterion == 'dct_mag_mae':
+        l1 = torch.nn.L1Loss()
+        criterion = STDCTDomain_Loss(l1)
+        criterion = STFTMagDomain_Loss(l1, criterion)
+    elif args.criterion == 'dct_mag_mae_pfp':
+        l1 = torch.nn.L1Loss()
+        criterion = STDCTDomain_Loss(l1)
+        criterion = STFTMagDomain_Loss(l1, criterion)
+        criterion = CombinePFPLoss(criterion, 1)
     else:
         raise ValueError("Not support criterion {}".format(args.criterion))
     
     #pit_criterion = PIT1d(criterion, n_sources=args.n_sources)
-    if args.amp:
-        trainer = TENET_AMP_Trainer(model, loader, criterion, optimizer, args)
-    else:
-        trainer = TENET_Trainer(model, loader, criterion, optimizer, args)
+    # if args.amp:
+    #     trainer = TENET_AMP_Trainer(model, loader, criterion, optimizer, args)
+    # else:
+    trainer = TENET_Trainer(model, loader, criterion, optimizer, args)
     trainer.run()
     
 if __name__ == '__main__':

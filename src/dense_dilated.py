@@ -70,3 +70,37 @@ class DenseBlock(nn.Module):
             out = getattr(self, 'prelu{}'.format(i + 1))(out)
             skip = torch.cat([out, skip], dim=1)
         return out
+
+class DilatedConv(nn.Module):
+    def __init__(self, feature_dim, ratio, channel=64):
+        super(DilatedConv, self).__init__()
+        twidth = 2
+        kernel_size = (twidth, 3)
+        
+        dil = 2 ** ratio
+        pad_length = twidth + (dil - 1) * (twidth - 1) - 1
+        self.pad = nn.ConstantPad2d((1, 1, pad_length, 0), value=0.)
+        self.conv = nn.Conv2d(channel * (ratio + 1), channel, kernel_size=kernel_size, dilation=(dil, 1))
+        self.norm = nn.LayerNorm(feature_dim)
+        self.prelu = nn.PReLU(channel)
+
+    def forward(self, x):
+        out = self.pad(x)
+        out = self.conv(out)
+        out = self.norm(out)
+        out = self.prelu(out)
+        return out
+
+class DenseBlock_New(nn.Module):
+    def __init__(self, feature_dim, channel=64, depth=4):
+        super(DenseBlock_New, self).__init__()
+        net = [DilatedConv(feature_dim, i, channel=channel) for i in range(depth)]
+
+        self.net = nn.ModuleList(net)
+            
+    def forward(self, x):
+        skip = x
+        for i in self.net:
+            out = i(skip)
+            skip = torch.cat([out, skip], dim=1)
+        return out

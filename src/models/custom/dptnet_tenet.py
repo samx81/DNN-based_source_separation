@@ -157,6 +157,7 @@ class DPTNet(nn.Module):
             mask = self.separator(w)
             w = w.unsqueeze(dim=1)
             w_hat = w * mask
+            # noise = mixture - clean
         
         latent = w_hat
         w_hat = w_hat.view(batch_size*n_sources, n_basis, -1)
@@ -432,7 +433,8 @@ class Separator_HC(nn.Module):
         x = self.map(x) # -> (batch_size, n_sources*C, n_frames)
         x = x.view(batch_size*n_sources, num_features, n_frames) # -> (batch_size*n_sources, num_features, n_frames)
         x = self.gtu(x) # -> (batch_size*n_sources, num_features, n_frames)
-        x = self.mask_nonlinear(x).clamp(min=self.mask_floor) # -> (batch_size*n_sources, num_features, n_frames)
+        # x = self.mask_nonlinear(x).clamp(min=self.mask_floor) # -> (batch_size*n_sources, num_features, n_frames)
+        x = self.mask_nonlinear(x)
         output = x.view(batch_size, n_sources, num_features, n_frames)
         
         return output
@@ -606,7 +608,10 @@ class Separator(nn.Module):
         x = self.map(x) # -> (batch_size, n_sources*C, n_frames)
         x = x.view(batch_size*n_sources, num_features, n_frames) # -> (batch_size*n_sources, num_features, n_frames)
         x = self.gtu(x) # -> (batch_size*n_sources, num_features, n_frames)
-        x = self.mask_nonlinear(x).clamp(min=0) # -> (batch_size*n_sources, num_features, n_frames)
+        
+        # x = self.mask_nonlinear(x) if isinstance(self.mask_nonlinear, nn.Tanh) else self.mask_nonlinear(x).clamp(min=0)
+        x = self.mask_nonlinear(x)
+        # -> (batch_size*n_sources, num_features, n_frames)
         output = x.view(batch_size, n_sources, num_features, n_frames)
         
         return output

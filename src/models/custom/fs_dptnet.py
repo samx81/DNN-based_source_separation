@@ -2,13 +2,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from utils.utils_filterbank import choose_filterbank
-from utils.utils_tasnet import choose_layer_norm
-from models.gtu import GTU1d
-from models.dprnn_tasnet import Segment1d, OverlapAdd1d
-from models.dptransformer import DualPathTransformer
-from dccrn import DCTCN_Encoder, DCTCN_Decoder
-
+from utils.filterbank import choose_filterbank
+from utils.tasnet import choose_layer_norm
+from models.gtu import GTU1d, GTU2d
+# from models.custom.dptcustom import DualPathTransformer, DualPathTransformer_Interact
+from dccrn import Naked_Encoder, Naked_Decoder
+from models.custom.dptfs import FS_Feature_Encoder, FS_Feature_Decoder, DualPathTransformer
 
 EPS=1e-12
 
@@ -16,6 +15,7 @@ class DPTNet(nn.Module):
     """
     Dual-path transformer based network
     """
+    # n_basis = 32, bottle_neck= 16, 
     def __init__(
         self,
         n_basis, kernel_size, stride=None,
@@ -71,20 +71,43 @@ class DPTNet(nn.Module):
         
         self.n_sources = n_sources
         self.eps = eps
-        
-        # Network configuration
-        encoder, decoder = DCTCN_Encoder(), DCTCN_Decoder()
-        
+
+        self.handcraft = kwargs.get('handcraft', None)
+        self.batch_size = kwargs.get('batch_size', None)
+        self.variation = kwargs.get('variation', None)
+
+        if 'TENET' in [enc_basis, dec_basis]:
+            encoder, decoder = Naked_Encoder(feat_type='TENET', causal=causal), Naked_Decoder(feat_type='TENET')
+        else:
+            # encoder, decoder = Naked_Encoder(256,128,256,feat_type='dct',causal=causal), Naked_Decoder(256,128,256,feat_type='dct')
+            encoder, decoder = Naked_Encoder(512,256,feat_type='dct',causal=causal), Naked_Decoder(512,256,feat_type='dct')
+
         self.encoder = encoder
-        self.separator = Separator(
-            n_basis, bottleneck_channels=sep_bottleneck_channels, hidden_channels=sep_hidden_channels,
-            chunk_size=sep_chunk_size, hop_size=sep_hop_size, num_blocks=sep_num_blocks,
-            num_heads=sep_num_heads, norm=sep_norm, nonlinear=sep_nonlinear, dropout=sep_dropout,
-            mask_nonlinear=mask_nonlinear,
-            causal=causal,
-            n_sources=n_sources,
-            eps=eps
-        )
+
+        self.feature_enc = FS_Feature_Encoder(512, 1, n_basis, 4)
+        self.feature_dec = FS_Feature_Decoder(512, n_basis, 1, 4)
+        if self.handcraft == 2:
+        # if True:
+            self.separator = Separator_HC_Interact(
+                n_basis, bottleneck_channels=sep_bottleneck_channels, hidden_channels=sep_hidden_channels,
+                chunk_size=sep_chunk_size, hop_size=sep_hop_size, num_blocks=sep_num_blocks,
+                num_heads=sep_num_heads, norm=sep_norm, nonlinear=sep_nonlinear, dropout=sep_dropout,
+                mask_nonlinear=mask_nonlinear,
+                causal=causal, batch_size=self.batch_size,
+                n_sources=n_sources,variation=self.variation,
+                eps=eps
+            )
+        else:
+            self.separator = Separator_HC(
+                n_basis, bottleneck_channels=sep_bottleneck_channels, hidden_channels=sep_hidden_channels,
+                chunk_size=sep_chunk_size, hop_size=sep_hop_size, num_blocks=sep_num_blocks,
+                num_heads=sep_num_heads, norm=sep_norm, nonlinear=sep_nonlinear, dropout=sep_dropout,
+                mask_nonlinear=mask_nonlinear,
+                causal=causal,
+                n_sources=n_sources,
+                eps=eps
+            )
+        
         self.decoder = decoder
         
     def forward(self, input):
@@ -103,10 +126,10 @@ class DPTNet(nn.Module):
         n_sources = self.n_sources
         n_basis = self.n_basis
         kernel_size, stride = self.kernel_size, self.stride
-        
         batch_size, C_in, T = input.size()
         
         assert C_in == 1, "input.size() is expected (?, 1, ?), but given {}".format(input.size())
+
         
         padding = (stride - (T - kernel_size) % stride) % stride
         padding_left = padding // 2
@@ -115,20 +138,22 @@ class DPTNet(nn.Module):
         input = F.pad(input, (padding_left, padding_right))
         w = self.encoder(input)
 
+        mask = self.feature_enc(w)
+
         if torch.is_complex(w):
             amplitude, phase = torch.abs(w), torch.angle(w)
             mask = self.separator(amplitude)
             amplitude, phase = amplitude.unsqueeze(dim=1), phase.unsqueeze(dim=1)
             w_hat = amplitude * mask * torch.exp(1j * phase)
         else:
-            w = w.unsqueeze(dim=1)
+            mask = self.separator(mask)
+            mask = self.feature_dec(mask)
+            
             w_hat = w * mask
-
-        mask = self.separator(w)
-
+            # noise = mixture - clean
         
         latent = w_hat
-        w_hat = w_hat.view(batch_size*n_sources, n_basis, -1)
+        # w_hat = w_hat.view(batch_size*n_sources, n_basis, -1)
         x_hat = self.decoder(w_hat)
         x_hat = x_hat.view(batch_size, n_sources, -1)
         output = F.pad(x_hat, (-padding_left, -padding_right))
@@ -158,9 +183,11 @@ class DPTNet(nn.Module):
             'mask_nonlinear': self.mask_nonlinear,
             'causal': self.causal,
             'n_sources': self.n_sources,
-            'eps': self.eps
+            'eps': self.eps,
+            'handcraft': self.handcraft,
         }
-    
+        if self.handcraft == 2:
+            config['variation'] = self.variation
         return config
     
     @classmethod
@@ -187,7 +214,7 @@ class DPTNet(nn.Module):
         n_sources = config['n_sources']
         
         eps = config['eps']
-
+        handcraft = config.get('handcraft', None)
         model = cls(
             n_basis, kernel_size, stride=stride,
             enc_basis=enc_basis, dec_basis=dec_basis, enc_nonlinear=enc_nonlinear,
@@ -197,7 +224,7 @@ class DPTNet(nn.Module):
             sep_num_heads=sep_num_heads,
             sep_norm=sep_norm, sep_nonlinear=sep_nonlinear, sep_dropout=sep_dropout,
             mask_nonlinear=mask_nonlinear,
-            causal=causal,
+            causal=causal, handcraft=handcraft,
             n_sources=n_sources,
             eps=eps
         )
@@ -217,7 +244,82 @@ class DPTNet(nn.Module):
                 
         return _num_parameters
 
-class Separator(nn.Module):
+class DPTNet_Interact(DPTNet):
+    """
+    Dual-path transformer based network
+    """
+    def __init__(
+        self,
+        n_basis, kernel_size, stride=None,
+        enc_basis=None, dec_basis=None,
+        sep_bottleneck_channels=64, sep_hidden_channels=256,
+        sep_chunk_size=100, sep_hop_size=None, sep_num_blocks=6,
+        sep_num_heads=4, sep_norm=True, sep_nonlinear='relu', sep_dropout=0,
+        mask_nonlinear='relu',
+        causal=False,
+        n_sources=2,
+        eps=EPS,
+        **kwargs
+    ):
+        super().__init__(n_basis, kernel_size, stride=stride,
+        enc_basis=enc_basis, dec_basis=dec_basis,
+        sep_bottleneck_channels=sep_bottleneck_channels, sep_hidden_channels=sep_hidden_channels,
+        sep_chunk_size=sep_chunk_size, sep_hop_size=sep_hop_size, sep_num_blocks=sep_num_blocks,
+        sep_num_heads=sep_num_heads, sep_norm=sep_norm, sep_nonlinear=sep_nonlinear, 
+        sep_dropout=sep_dropout, mask_nonlinear=mask_nonlinear, causal=causal, 
+        n_sources=n_sources, eps=eps,
+        **kwargs)
+        
+    def forward(self, input, eval=False):
+        output, latent = self.extract_latent(input, eval=eval)
+        
+        return output, latent
+        
+    def extract_latent(self, input, eval=False):
+        """
+        Args:
+            input (batch_size, 1, T)
+        Returns:
+            output (batch_size, n_sources, T)
+            latent (batch_size, n_sources, n_basis, T'), where T' = (T-K)//S+1
+        """
+        n_sources = self.n_sources
+        n_basis = self.n_basis
+        kernel_size, stride = self.kernel_size, self.stride
+        
+        batch_size, C_in, T = input.size()
+        
+        assert C_in == 1, "input.size() is expected (?, 1, ?), but given {}".format(input.size())
+
+        if self.enc_basis in self.handcraft_basis_lst:
+            padding = (100 - (T - 400) % 100) % 100
+        else:
+            padding = (stride - (T - kernel_size) % stride) % stride
+        padding_left = padding // 2
+        padding_right = padding - padding_left
+
+        input = F.pad(input, (padding_left, padding_right))
+        w = self.encoder(input)
+
+        if torch.is_complex(w):
+            amplitude, phase = torch.abs(w), torch.angle(w)
+            mask = self.separator(amplitude)
+            amplitude, phase = amplitude.unsqueeze(dim=1), phase.unsqueeze(dim=1)
+            w_hat = amplitude * mask * torch.exp(1j * phase)
+        else:
+            mask = self.separator(w, eval)
+            w = w.unsqueeze(dim=1)
+            w_hat = w * mask
+        
+        latent = w_hat
+        w_hat = w_hat.view(batch_size*n_sources, n_basis, -1)
+        x_hat = self.decoder(w_hat)
+        x_hat = x_hat.view(batch_size, n_sources, -1)
+        output = F.pad(x_hat, (-padding_left, -padding_right))
+        
+        return output, latent
+
+class Separator_HC(nn.Module):
     def __init__(
         self,
         num_features, bottleneck_channels=32, hidden_channels=128,
@@ -225,7 +327,7 @@ class Separator(nn.Module):
         num_heads=4,
         norm=True, nonlinear='relu', dropout=0,
         mask_nonlinear='relu',
-        causal=True,
+        causal=True, mask_floor=0.0,
         n_sources=2,
         eps=EPS
     ):
@@ -237,30 +339,29 @@ class Separator(nn.Module):
         self.num_features, self.n_sources = num_features, n_sources
         self.chunk_size, self.hop_size = chunk_size, hop_size
         
-        bottleneck_channels = num_features//2
-        self.bottleneck_conv2d = nn.Conv2d(num_features, bottleneck_channels, kernel_size=1, stride=(1,2))
-        # self.segment1d = Segment1d(chunk_size, hop_size)
+        self.conv2d = nn.Conv2d(num_features, bottleneck_channels, 1,1)
+        self.iconv2d = nn.Conv2d(bottleneck_channels, num_features, 1,1) 
         
         norm_name = 'cLN' if causal else 'gLN'
-        self.norm2d = choose_layer_norm(norm_name, bottleneck_channels, causal=causal, eps=eps)
+        self.norm2d = choose_layer_norm(norm_name, num_features, causal=causal, eps=eps)
 
         self.dptransformer = DualPathTransformer(
-            bottleneck_channels, num_features,
+            bottleneck_channels, hidden_channels,
             num_blocks=num_blocks, num_heads=num_heads,
             norm=norm, nonlinear=nonlinear, dropout=dropout,
             causal=causal, eps=eps
         )
-        # self.overlap_add1d = OverlapAdd1d(chunk_size, hop_size)
+        self.mask_floor = mask_floor
         self.prelu = nn.PReLU()
-        self.map = nn.ConvTranspose2d(bottleneck_channels, num_features, kernel_size=(1,1), stride=(1,2))
+        # self.map = nn.Conv2d(num_features, n_sources*num_features, kernel_size=1, stride=1)
         self.gtu = GTU2d(num_features, num_features, kernel_size=1, stride=1)
-
-        self.aftergtu = nn.Conv2d
         
         if mask_nonlinear == 'relu':
             self.mask_nonlinear = nn.ReLU()
         elif mask_nonlinear == 'sigmoid':
             self.mask_nonlinear = nn.Sigmoid()
+        elif mask_nonlinear == 'tanh':
+            self.mask_nonlinear = nn.Tanh()
         elif mask_nonlinear == 'softmax':
             self.mask_nonlinear = nn.Softmax(dim=1)
         else:
@@ -275,24 +376,127 @@ class Separator(nn.Module):
         """
         num_features, n_sources = self.num_features, self.n_sources
         chunk_size, hop_size = self.chunk_size, self.hop_size
+        batch_size, channel, n_frames, num_features = input.size()
+        
+        # padding = (hop_size - (n_frames - chunk_size) % hop_size) % hop_size
+        # padding_left = padding // 2
+        # padding_right = padding - padding_left
+        # # x = self.bottleneck_conv1d(input)
+
+        # x = F.pad(input, (padding_left, padding_right))
+        # x = self.norm2d(x)
+        # x = self.prelu(x) # New
+        
+        # x = self.prelu(x) # New
+        # x = self.norm2d(x)
+        x = self.conv2d(input) # New
+        x = self.prelu(x) # New
+        x = self.dptransformer(x)
+
+        x = self.prelu(x) # New
+        x = self.iconv2d(x)# New 
+
+        # x = F.pad(x, (-padding_left, -padding_right))
+        # x = self.prelu(x) # -> (batch_size, C, n_frames)
+        # x = self.map(x) # -> (batch_size, n_sources*C, n_frames, num_features)
+        # x = x.view(batch_size*n_sources, channel, n_frames, num_features) # -> (batch_size*n_sources, num_features, n_frames)
+        x = self.gtu(x) # -> (batch_size*n_sources, num_features, n_frames)
+        # x = self.mask_nonlinear(x).clamp(min=self.mask_floor) # -> (batch_size*n_sources, num_features, n_frames)
+        output = self.mask_nonlinear(x)
+        # output = x.view(batch_size, channel, num_features, n_frames)
+        
+        return output
+
+class Separator_HC_Interact(nn.Module):
+    def __init__(
+        self,
+        num_features, bottleneck_channels=32, hidden_channels=128,
+        chunk_size=100, hop_size=None, num_blocks=6,
+        num_heads=4,
+        norm=True, nonlinear='relu', dropout=0,
+        mask_nonlinear='relu',
+        causal=True, mask_floor=0.0,
+        n_sources=2,variation=0,
+        eps=EPS, batch_size=8
+    ):
+        super().__init__()
+
+        if hop_size is None:
+            hop_size = chunk_size//2
+        
+        self.num_features, self.n_sources = num_features, n_sources
+        self.chunk_size, self.hop_size = chunk_size, hop_size
+        self.batch_size= batch_size
+        
+        # self.bottleneck_conv1d = nn.Conv1d(num_features, bottleneck_channels, kernel_size=1, stride=1)
+        self.segment1d = Segment1d(chunk_size, hop_size)
+
+        self.conv2d = nn.Conv2d(num_features, bottleneck_channels, 1,1)
+        self.iconv2d = nn.Conv2d(bottleneck_channels, num_features, 1,1) 
+        
+        norm_name = 'cLN' if causal else 'gLN'
+        self.norm2d = choose_layer_norm(norm_name, num_features, causal=causal, eps=eps)
+
+        self.dptransformer = DualPathTransformer_Interact(
+            bottleneck_channels, hidden_channels, self.batch_size,
+            num_blocks=num_blocks, num_heads=num_heads,
+            norm=norm, nonlinear=nonlinear, dropout=dropout,
+            causal=causal, eps=eps, variation=variation
+        )
+        self.mask_floor = mask_floor
+        self.overlap_add1d = OverlapAdd1d(chunk_size, hop_size)
+        self.prelu = nn.PReLU()
+        self.map = nn.Conv1d(num_features, n_sources*num_features, kernel_size=1, stride=1)
+        self.gtu = GTU1d(num_features, num_features, kernel_size=1, stride=1)
+        
+        if mask_nonlinear == 'relu':
+            self.mask_nonlinear = nn.ReLU()
+        elif mask_nonlinear == 'sigmoid':
+            self.mask_nonlinear = nn.Sigmoid()
+        elif mask_nonlinear == 'tanh':
+            self.mask_nonlinear = nn.Tanh()
+        elif mask_nonlinear == 'softmax':
+            self.mask_nonlinear = nn.Softmax(dim=1)
+        else:
+            raise ValueError("Cannot support {}".format(mask_nonlinear))
+            
+    def forward(self, input, eval=False):
+        """
+        Args:
+            input (batch_size, num_features, n_frames)
+        Returns:
+            output (batch_size, n_sources, num_features, n_frames)
+        """
+        num_features, n_sources = self.num_features, self.n_sources
+        chunk_size, hop_size = self.chunk_size, self.hop_size
         batch_size, num_features, n_frames = input.size()
         
         padding = (hop_size - (n_frames - chunk_size) % hop_size) % hop_size
         padding_left = padding // 2
         padding_right = padding - padding_left
-        
-        x = self.bottleneck_conv2d(input)
-        x = F.pad(x, (padding_left, padding_right))
-        # x = self.segment1d(x) # -> (batch_size, C, S, chunk_size)
+        # x = self.bottleneck_conv1d(input)
+
+        x = F.pad(input, (padding_left, padding_right))
         x = self.norm2d(x)
-        x = self.dptransformer(x)
-        # x = self.overlap_add1d(x)
+        x = self.prelu(x) # New
+        
+        x = self.segment1d(x) # -> (batch_size, C, S, chunk_size)
+        # x = self.prelu(x) # New
+        # x = self.norm2d(x)
+        x = self.conv2d(x) # New
+        x = self.prelu(x) # New
+        x = self.dptransformer(x, eval)
+
+        x = self.prelu(x) # New
+        x = self.iconv2d(x)# New 
+
+        x = self.overlap_add1d(x)
         x = F.pad(x, (-padding_left, -padding_right))
-        x = self.prelu(x) # -> (batch_size, C, n_frames)
+        # x = self.prelu(x) # -> (batch_size, C, n_frames)
         x = self.map(x) # -> (batch_size, n_sources*C, n_frames)
         x = x.view(batch_size*n_sources, num_features, n_frames) # -> (batch_size*n_sources, num_features, n_frames)
         x = self.gtu(x) # -> (batch_size*n_sources, num_features, n_frames)
-        x = self.mask_nonlinear(x) # -> (batch_size*n_sources, num_features, n_frames)
+        x = self.mask_nonlinear(x).clamp(min=self.mask_floor) # -> (batch_size*n_sources, num_features, n_frames)
         output = x.view(batch_size, n_sources, num_features, n_frames)
         
         return output

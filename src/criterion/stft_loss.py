@@ -438,7 +438,7 @@ class STFTCombineDomain_Loss(torch.nn.Module):
         self.loss_fn = loss_fn
         self.complex_weight = complex_weight
 
-    def forward(self, x, y, latent_x, latent_y):
+    def forward(self, x, y, latent_x=None, latent_y=None):
         """Calculate forward propagation.
         Args:
             x (Tensor): Predicted signal (B, T).
@@ -457,7 +457,7 @@ class STFTCombineDomain_Loss(torch.nn.Module):
 class STFTMagDomain_Loss(torch.nn.Module):
     """DEMUCS loss module."""
         
-    def __init__(self, loss_fn, fft_size=1024, shift_size=120, win_length=600, window="hann_window", consistency=False):
+    def __init__(self, loss_fn, aux_loss=None, weight=0.3, fft_size=1024, shift_size=120, win_length=600, window="hann_window", consistency=False):
         """Initialize STFT loss module."""
         super(STFTMagDomain_Loss, self).__init__()
         self.fft_size = fft_size
@@ -466,8 +466,10 @@ class STFTMagDomain_Loss(torch.nn.Module):
         self.register_buffer("window", getattr(torch, window)(win_length))
         self.window = self.window.cuda()
         self.loss_fn = loss_fn
+        self.aux_loss = aux_loss
+        self.weight = weight
 
-    def forward(self, x, y, latent_x, latent_y):
+    def forward(self, x, y, latent_x=None, latent_y=None):
         """Calculate forward propagation.
         Args:
             x (Tensor): Predicted signal (B, T).
@@ -478,14 +480,18 @@ class STFTMagDomain_Loss(torch.nn.Module):
         """
         x_mag = stft(x, self.fft_size, self.shift_size, self.win_length, self.window)
         y_mag = stft(y, self.fft_size, self.shift_size, self.win_length, self.window)
-        loss = self.loss_fn(x_mag, y_mag)
+
+        if self.aux_loss:
+            loss = self.weight * self.aux_loss(x, y) + (1 - self.weight) * self.loss_fn(x_mag, y_mag)
+        else:
+            loss = self.loss_fn(x_mag, y_mag)
 
         return loss
 
 class STDCTDomain_Loss(torch.nn.Module):
     """STFT loss module."""
 
-    def __init__(self, loss_fn, fft_size=1024, shift_size=120, win_length=600, window="hann_window"):
+    def __init__(self, loss_fn, fft_size=512, shift_size=128, win_length=512, window="hann_window"):
         """Initialize STFT loss module."""
         super(STDCTDomain_Loss, self).__init__()
         self.fft_size = fft_size
@@ -495,7 +501,7 @@ class STDCTDomain_Loss(torch.nn.Module):
         # self.window = self.window.cuda()
         self.loss_fn = loss_fn
 
-    def forward(self, x, y, latent_x, latent_y):
+    def forward(self, x, y, latent_x=None, latent_y=None):
         """Calculate forward propagation.
         Args:
             x (Tensor): Predicted signal (B, T).
